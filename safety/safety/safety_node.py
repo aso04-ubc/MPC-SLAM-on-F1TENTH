@@ -8,15 +8,17 @@ from rclpy.node import Node
 class SafetyNode(Node):
     def __init__(self):
         super().__init__("safety_node")
-        self.subscriptions = self.create_subscription(
+        self.laser_receiver = self.create_subscription(
             LaserScan,
             "scan",
             self.OnReceiveLaserInfo,
             10
         )
 
-    def OnReceiveLaserInfo(self, info : LaserScan):
-        self.get_logger().info(info)
+    def OnReceiveLaserInfo(self, laser_info : LaserScan):
+        laser_info
+        
+        self.get_logger().info(str(laser_info))
 
 def main(args=None):
     rclpy.init(args=args)

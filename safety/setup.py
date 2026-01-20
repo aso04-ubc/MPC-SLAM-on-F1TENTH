@@ -15,11 +15,12 @@ setup(
     zip_safe=True,
     maintainer='zhou',
     maintainer_email='guanxu@student.ubc.ca',
-    description='TODO: Package description',
+    description='The safety node to prevent from crashing',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            "safety_node = safety.safety_node:main"
         ],
     },
 )
