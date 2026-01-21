@@ -5,6 +5,7 @@ import array
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from time import time
 
 import numpy as np
 
@@ -23,17 +24,24 @@ class SafetyNode(Node):
     def __init__(self):
         super().__init__("safety_node")
 
-        qos_policy = QoSProfile(
+        sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
-        )   
+        )
+
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            "/ego_racecar/odom",
+            self.OnReceiveOdomInfo,
+            sensor_qos
+        )
 
         self.laser_receiver = self.create_subscription(
             LaserScan,
             "scan",
             self.OnReceiveLaserInfo,
-            qos_policy
+            sensor_qos
         )
 
         self.control_info_pusher = self.create_publisher(
@@ -41,64 +49,66 @@ class SafetyNode(Node):
             'drive',
             10
         )
+        
+        self.current_speed = 0.0
+        self.ttc_threshold = 1
 
         self.pre_frame = None
         self.last_stamp = None
 
+        self.get_logger().info("Safety Node Online")
+
+
+    def OnReceiveOdomInfo(self, msg: Odometry):
+        """
+        Updates the current speed of the car from the odometry topic.
+        We focus on linear.x (forward velocity).
+        """
+        self.current_speed = msg.twist.twist.linear.x
+
 
     def OnReceiveLaserInfo(self, laser_info : LaserScan):
+        """
+        Callback function to process incoming laser scan data and 
+        determine if a braking action is necessary based on 
+        Time-To-Collision (TTC) calculations.
+        """
 
-        # get_current_sec
-        current_stamp = laser_info.header.stamp.sec + laser_info.header.stamp.nanosec * 1e-9
+        ranges = np.array(laser_info.ranges)
         
-        if self.last_stamp is None:
-            dt = 0.1
-        else:
-            dt = current_stamp - self.last_stamp
+        ranges[np.isinf(ranges)] = np.inf
+        ranges[np.isnan(ranges)] = np.inf
 
-        if dt < 1/40:
-            return 
-
-        self.last_stamp = current_stamp
+        angles = np.arange(
+            laser_info.angle_min, 
+            laser_info.angle_max, 
+            laser_info.angle_increment
+        )
         
-        scan_time = laser_info.scan_time
-        if scan_time == 0.0:
-            scan_time = dt
+        if len(angles) > len(ranges):
+            angles = angles[:len(ranges)]
+        elif len(angles) < len(ranges):
+            ranges = ranges[:len(angles)]
 
-        # self.get_logger().info(str(scan_time))
+        range_rates = self.current_speed * np.cos(angles)
+        range_rates = np.maximum(range_rates, 0.001)
 
-        # deal with ttc
-        current_ranges = np.array(laser_info.ranges)
-        
-        current_ranges[np.isinf(current_ranges)] = 0
-        current_ranges[np.isnan(current_ranges)] = 0
-        current_ranges[current_ranges == 0] = 0
+        ttc_values = ranges / range_rates
 
-        if self.pre_frame is not None:
-            delta_dist = current_ranges - self.pre_frame
-            velocity = delta_dist / dt
+        min_ttc = np.min(ttc_values)
 
-            danger_mask = (velocity < -0.5) & (current_ranges < 5.0)
-            
-            if np.any(danger_mask):
-                dists = current_ranges[danger_mask]
-                vels = velocity[danger_mask]
-                
-                ttc_values = dists / np.abs(vels)
-                
-                min_ttc = np.min(ttc_values)
-                self.get_logger().info(f"Min TTC: {min_ttc:.2f} s")
+        if min_ttc < self.ttc_threshold:
+            self.get_logger().info("Sent break due to ttc: {}".format(min_ttc))
+            self.SentBreak()
 
-                if min_ttc < 0.3 or np.min(current_ranges) < 0.2:
-                    self.SentBreak()
-            
-            elif np.min(current_ranges) < 0.2:
-                self.SentBreak()
+        elif np.min(ranges) < 0.25:
+            self.get_logger().info("Sent break due to min distance")
+            self.SentBreak()
 
-        self.pre_frame = current_ranges
-    
     def SentBreak(self):
-        self.get_logger().info("Break Sent")
+        """
+        Sends a braking command to the vehicle by publishing
+        """
         new_pack = AckermannDriveStamped()
         new_pack.drive.speed = 0.0
         self.control_info_pusher.publish(new_pack)
