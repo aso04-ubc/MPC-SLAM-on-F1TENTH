@@ -6,7 +6,7 @@ import rclpy
 import numpy as np
 
 # TTC threshold in seconds - if TTC is below this, emergency braking is triggered
-g_TTC_Threshold = 0.5
+g_TTC_Threshold = 0.8
 
 # Minimum speed threshold to avoid division by zero and false positives when stationary
 g_MinimumSpeed = 0.1
