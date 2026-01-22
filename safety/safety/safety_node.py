@@ -51,7 +51,8 @@ class SafetyNode(Node):
         )
         
         self.current_speed = 0.0
-        self.ttc_threshold = 1
+        self.ttc_thresholds = 0.5
+        self.ttc_threshold_distance = 0.2
 
         self.pre_frame = None
         self.last_stamp = None
@@ -97,20 +98,20 @@ class SafetyNode(Node):
 
         min_ttc = np.min(ttc_values)
 
-        if min_ttc < self.ttc_threshold:
-            self.get_logger().info("Sent break due to ttc: {}".format(min_ttc))
+        if min_ttc < self.ttc_thresholds:
+            self.get_logger().info("Sent break to speed {} due to ttc: {}".format(0, min_ttc))
             self.SentBreak()
 
-        elif np.min(ranges) < 0.25:
+        if np.min(ranges) < self.ttc_threshold_distance:
             self.get_logger().info("Sent break due to min distance")
             self.SentBreak()
 
-    def SentBreak(self):
+    def SentBreak(self, speed = 0.0):
         """
         Sends a braking command to the vehicle by publishing
         """
         new_pack = AckermannDriveStamped()
-        new_pack.drive.speed = 0.0
+        new_pack.drive.speed = speed
         self.control_info_pusher.publish(new_pack)
 
 def main(args=None):
