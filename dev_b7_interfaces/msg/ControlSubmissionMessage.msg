@@ -1,0 +1,2 @@
+int32 priority
+ackermann_msgs/AckermannDriveStamped drive
