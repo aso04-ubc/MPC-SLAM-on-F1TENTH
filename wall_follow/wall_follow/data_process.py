@@ -2,9 +2,10 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from std_msgs.msg import Float64
 
 import numpy as np
+from time import time
 
 from wall_follow.config import DEBUG
 from wall_follow.KalmanFilter import SimpleKalmanFilter
@@ -17,12 +18,12 @@ class DataProcess(Node):
     def __init__(self):
         super().__init__("wall_follow")
 
-        self.windows_size = 5
+        self.windows_size = 100 # larger better 
 
-        
-        # add kalman filter to smooth the lidar data
-        # make the parameters tunable later
-        self.simple_kalmanFilter = SimpleKalmanFilter(10.0, 0.1) 
+        self.kf_left_angle = SimpleKalmanFilter(10.0, 0.1)
+        self.kf_right_angle = SimpleKalmanFilter(10.0, 0.1)
+        self.kf_left_dist = SimpleKalmanFilter(10.0, 0.1)
+        self.kf_right_dist = SimpleKalmanFilter(10.0, 0.1)
 
         ## set up PID controller
         self.PID_control = PIDControl()
@@ -57,17 +58,10 @@ class DataProcess(Node):
         # )
 
         if DEBUG:
-            self.filtered_lidar_pub = self.create_publisher(
-                LaserScan,
-                "wall_follow/filtered_scan",
-                10
-            )
-
-            self.debug_info_pub = self.create_publisher(
-                DiagnosticStatus,
-                "wall_follow/debug_info",
-                10
-            )
+            self.pub_debug_left_dist   = self.create_publisher(Float64, "debug/left_dist", 10)
+            self.pub_debug_left_angle  = self.create_publisher(Float64, "debug/left_angle", 10)
+            self.pub_debug_right_dist  = self.create_publisher(Float64, "debug/right_dist", 10)
+            self.pub_debug_right_angle = self.create_publisher(Float64, "debug/right_angle", 10)
 
 
     def OnReceiveOdomInfo(self, odom_data : Odometry):
@@ -75,19 +69,86 @@ class DataProcess(Node):
         pass
 
 
-    def OnReceiveLaserInfo(self, lidar_data : LaserScan):
-        
-        range_np = self.simple_kalmanFilter.update(np.array(lidar_data.ranges))
-
+    # process usually take less than 1 ms on my machine, using windows size of 100.
+    def OnReceiveLaserInfo(self, lidar_data):
+        # get basic info from the input data
+        ranges = np.array(lidar_data.ranges)
+        self.angle_increment = lidar_data.angle_increment
         self.angle_min = lidar_data.angle_min
         self.angle_max = lidar_data.angle_max
-        self.angle_increment = lidar_data.angle_increment
+        
+        all_angles = self.angle_min + np.arange(len(ranges)) * self.angle_increment
+        
+        # filter out invalid data
+        ranges = np.nan_to_num(ranges, 
+                               nan=lidar_data.range_min, 
+                               posinf=lidar_data.range_max, 
+                               neginf=lidar_data.range_min)
 
-        self.process_lidar(range_np)
+        # get vectors on each side
+        idx_0 = self.get_target_index(0.0)
+        idx_90 = -1
+        idx_neg_90 = 0
+
+        # get oriented distances and angles
+        left_dist, left_tangent = self.process_lidar_one_side(
+            ranges[idx_0 : idx_90], 
+            all_angles[idx_0 : idx_90]
+        )
+
+        right_dist, right_tangent = self.process_lidar_one_side(
+            ranges[idx_neg_90 : idx_0], 
+            all_angles[idx_neg_90 : idx_0]
+        )
+
+        # Apply Kalman Filter to smooth the results
+        left_tangent = self.kf_left_angle.update(left_tangent)
+        left_dist = self.kf_left_dist.update(left_dist)
+        right_tangent = self.kf_right_angle.update(right_tangent)
+        right_dist = self.kf_right_dist.update(right_dist)
+
 
         if DEBUG:
-            lidar_data.ranges = range_np.tolist()    
-            self.filtered_lidar_pub.publish(lidar_data)
+            msg_ld = Float64(); msg_ld.data = float(left_dist)
+            msg_la = Float64(); msg_la.data = float(left_tangent)
+            msg_rd = Float64(); msg_rd.data = float(right_dist)
+            msg_ra = Float64(); msg_ra.data = float(right_tangent)
+
+            self.pub_debug_left_dist.publish(msg_ld)
+            self.pub_debug_left_angle.publish(msg_la)
+            self.pub_debug_right_dist.publish(msg_rd)
+            self.pub_debug_right_angle.publish(msg_ra)
+            # self.get_logger().info(f"Left dist: {left_dist:.2f}, angle: {left_tangent:.2f} | Right dist: {right_dist:.2f}, angle: {right_tangent:.2f}")
+        
+
+    def process_lidar_one_side(self, local_ranges, local_angles):
+
+        # Find the index of the minimum distance, which should be close to the wall
+        min_idx = np.argmin(local_ranges)
+
+        start_idx = max(0, min_idx - self.windows_size)
+        end_idx = min(len(local_ranges) - 1, min_idx + self.windows_size)
+
+        # Get the angle and distance data for fitting
+        fit_ranges = local_ranges[start_idx:end_idx]
+        fit_angles = local_angles[start_idx:end_idx] 
+
+        # Get x and y coordinates
+        x = fit_ranges * np.cos(fit_angles)
+        y = fit_ranges * np.sin(fit_angles)
+
+        if len(x) < 3:
+            return fit_ranges[0], 0.0
+
+        # Perform linear regression (least squares) to find the line parameters
+        A_matrix = np.vstack([x, np.ones(len(x))]).T
+        m, c = np.linalg.lstsq(A_matrix, y, rcond=None)[0]
+
+        # Calculate the distance from the origin to the line (Ax + By + C = 0)
+        dist = abs(c) / np.sqrt(m**2 + 1)
+        tangent_angle = np.arctan(m)
+
+        return dist, tangent_angle
 
     def get_target_index(self,  target_angle : float):
         raw_index = (target_angle - self.angle_min) / self.angle_increment
@@ -95,54 +156,5 @@ class DataProcess(Node):
         return target_index
         
 
-    def process_lidar(self, lidar_data : np.ndarray):
-        left_dist, left_tangent = self.process_lidar_one_side(
-            lidar_data[self.get_target_index(0.0): self.get_target_index(np.pi/2)]
-        )
-
-        right_dist, right_tangent = self.process_lidar_one_side(
-            lidar_data[self.get_target_index(-np.pi/2): self.get_target_index(0.0)]
-        )
-
-        if DEBUG:
-            msg = DiagnosticStatus()
-            msg.level = DiagnosticStatus.OK
-            msg.name = "Wall Follow Debug Info"
-            msg.values = [
-                KeyValue(key="Left Distance", value=str(left_dist)),
-                KeyValue(key="Left Tangent Angle", value=str(left_tangent)),
-                KeyValue(key="Right Distance", value=str(right_dist)),
-                KeyValue(key="Right Tangent Angle", value=str(right_tangent))
-            ]
-            self.debug_info_pub.publish(msg)
-
-
         
-    def process_lidar_one_side(self, lidar_data : np.ndarray):
-
-        valid_mask = (lidar_data > 0.01) & (lidar_data < 10.0)
-
-        # Get the index of the closest point
-        lidar_data[~valid_mask] = np.inf
-        min_idx = np.argmin(lidar_data)
-
-        start_idx = max(0, min_idx - self.windows_size)
-        end_idx = min(len(lidar_data) - 1, min_idx + self.windows_size)
-
-        local_ranges = lidar_data[start_idx:end_idx]
-        local_angles = self.angle_min + np.arange(start_idx, end_idx) * self.angle_increment
-
-        x = local_ranges * np.cos(local_angles)
-        y = local_ranges * np.sin(local_angles)
-
-        if len(x) < 3: 
-            return local_ranges[min_idx - start_idx], local_angles[min_idx - start_idx]
-
-        A_matrix = np.vstack([x, np.ones(len(x))]).T
-        m, c = np.linalg.lstsq(A_matrix, y, rcond=None)[0]
-
-        dist = abs(c) / np.sqrt(m**2 + 1)
-        tangent_angle = np.arctan(m)
-
-        return dist, tangent_angle
 
