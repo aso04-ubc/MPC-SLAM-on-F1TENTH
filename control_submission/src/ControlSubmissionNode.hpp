@@ -73,6 +73,9 @@ private:
     // Integrate AEB directly in this node for lower latency
     void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg);
     void OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+
+private:
+    std::thread m_ConsoleInputListenerThread;
 };
 
 #endif //CONTROL_SUBMISSION_CONTROLSUBMISSIONNODE_HPP
