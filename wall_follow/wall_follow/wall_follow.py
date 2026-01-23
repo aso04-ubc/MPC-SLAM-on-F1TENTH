@@ -2,9 +2,10 @@ import data_process
 import rclpy
 
 def main(args=None):
+    
     rclpy.init(args=args)
 
-    minimal_subscriber = data_process()
+    minimal_subscriber = data_process.DataProcess()
 
     rclpy.spin(minimal_subscriber)
     

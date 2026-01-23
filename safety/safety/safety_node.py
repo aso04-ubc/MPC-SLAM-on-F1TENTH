@@ -1,6 +1,6 @@
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
+from ackermann_msgs.msg import AckermannDriveStamped
 import array
 import rclpy
 from rclpy.node import Node
