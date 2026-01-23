@@ -5,7 +5,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float64
 
 import numpy as np
-from time import time
 
 from wall_follow.config import DEBUG
 from wall_follow.KalmanFilter import SimpleKalmanFilter
@@ -18,7 +17,7 @@ class DataProcess(Node):
     def __init__(self):
         super().__init__("wall_follow")
 
-        self.windows_size = 100 # larger better 
+        self.window_size = 100 # larger better 
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
@@ -37,7 +36,8 @@ class DataProcess(Node):
         self.kf_right_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
         self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
-        ## set up PID controller
+
+        # set up PID controller
         self.PID_control = PIDControl()
 
         # make sure to get most recent messages
@@ -69,11 +69,14 @@ class DataProcess(Node):
         #     10
         # )
 
+        self.get_logger().info("Data Process Node Initialized.")
         if DEBUG:
+            self.get_logger().info("Debug mode is ON.")
             self.pub_debug_left_dist   = self.create_publisher(Float64, "debug/left_dist", 10)
             self.pub_debug_left_angle  = self.create_publisher(Float64, "debug/left_angle", 10)
             self.pub_debug_right_dist  = self.create_publisher(Float64, "debug/right_dist", 10)
             self.pub_debug_right_angle = self.create_publisher(Float64, "debug/right_angle", 10)
+        
 
 
     def OnReceiveOdomInfo(self, odom_data : Odometry):
@@ -81,7 +84,7 @@ class DataProcess(Node):
         pass
 
 
-    # process usually take less than 1 ms on my machine, using windows size of 100.
+    # process usually take less than 1 ms on my machine, using window size of 100.
     def OnReceiveLaserInfo(self, lidar_data):
         # get basic info from the input data
         ranges = np.array(lidar_data.ranges)
@@ -98,19 +101,19 @@ class DataProcess(Node):
                                neginf=lidar_data.range_min)
 
         # get vectors on each side
-        idx_0 = self.get_target_index(0.0)
-        idx_90 = -1
-        idx_neg_90 = 0
+        idx_middle = self.get_target_index(0.0)
+        idx_leftmost = -1
+        idx_rightmost = 0
 
         # get oriented distances and angles
         left_dist, left_tangent = self.process_lidar_one_side(
-            ranges[idx_0 : idx_90], 
-            all_angles[idx_0 : idx_90]
+            ranges[idx_middle : idx_leftmost], 
+            all_angles[idx_middle : idx_leftmost]
         )
 
         right_dist, right_tangent = self.process_lidar_one_side(
-            ranges[idx_neg_90 : idx_0], 
-            all_angles[idx_neg_90 : idx_0]
+            ranges[idx_rightmost : idx_middle], 
+            all_angles[idx_rightmost : idx_middle]
         )
 
         # Apply Kalman Filter to smooth the results
@@ -138,8 +141,8 @@ class DataProcess(Node):
         # Find the index of the minimum distance, which should be close to the wall
         min_idx = np.argmin(local_ranges)
 
-        start_idx = max(0, min_idx - self.windows_size)
-        end_idx = min(len(local_ranges) - 1, min_idx + self.windows_size)
+        start_idx = max(0, min_idx - self.window_size)
+        end_idx = min(len(local_ranges) - 1, min_idx + self.window_size)
 
         # Get the angle and distance data for fitting
         fit_ranges = local_ranges[start_idx:end_idx]
@@ -154,10 +157,23 @@ class DataProcess(Node):
 
         # Perform linear regression (least squares) to find the line parameters
         A_matrix = np.vstack([x, np.ones(len(x))]).T
-        m, c = np.linalg.lstsq(A_matrix, y, rcond=None)[0]
+
+        coeffs, residuals, rank, s = np.linalg.lstsq(A_matrix, y, rcond=None)
+
+        # If the matrix is rank-deficient, the fit is unreliable; fall back to a safe default
+        if rank < A_matrix.shape[1]:
+            return fit_ranges[0], 0.0
+        
+        m, c = coeffs
 
         # Calculate the distance from the origin to the line (Ax + By + C = 0)
-        dist = abs(c) / np.sqrt(m**2 + 1)
+        denom = np.sqrt(m**2 + 1.0)
+
+        if not np.isfinite(m) or not np.isfinite(c) or denom == 0.0 or not np.isfinite(denom):
+            return fit_ranges[0], 0.0
+        
+        dist = abs(c) / denom
+
         tangent_angle = np.arctan(m)
 
         return dist, tangent_angle

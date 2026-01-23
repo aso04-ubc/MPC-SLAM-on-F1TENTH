@@ -1,8 +1,6 @@
 # From website
 # Kalman Filter implementation for 1D data smoothing
 
-import numpy as np
-
 class SimpleKalmanFilter:
     def __init__(self, R, Q, initial_value=0.0):
         """
