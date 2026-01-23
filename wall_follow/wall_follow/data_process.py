@@ -20,11 +20,23 @@ class DataProcess(Node):
 
         self.windows_size = 100 # larger better 
 
-        self.kf_left_angle = SimpleKalmanFilter(10.0, 0.1)
-        self.kf_right_angle = SimpleKalmanFilter(10.0, 0.1)
-        self.kf_left_dist = SimpleKalmanFilter(10.0, 0.1)
-        self.kf_right_dist = SimpleKalmanFilter(10.0, 0.1)
+        # Kalman filter parameters (configurable via ROS parameters)
+        # Angle filters
+        self.declare_parameter('kalman_angle_R', 10.0)
+        self.declare_parameter('kalman_angle_Q', 0.1)
+        kalman_angle_R = self.get_parameter('kalman_angle_R').get_parameter_value().double_value
+        kalman_angle_Q = self.get_parameter('kalman_angle_Q').get_parameter_value().double_value
 
+        # Distance filters
+        self.declare_parameter('kalman_distance_R', 10.0)
+        self.declare_parameter('kalman_distance_Q', 0.1)
+        kalman_distance_R = self.get_parameter('kalman_distance_R').get_parameter_value().double_value
+        kalman_distance_Q = self.get_parameter('kalman_distance_Q').get_parameter_value().double_value
+
+        self.kf_left_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
+        self.kf_right_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
+        self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
+        self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         ## set up PID controller
         self.PID_control = PIDControl()
 
