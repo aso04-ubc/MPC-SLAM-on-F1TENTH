@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'safety'
+package_name = 'wall_follow'
 
 setup(
     name=package_name,
@@ -15,12 +15,12 @@ setup(
     zip_safe=True,
     maintainer='zhou',
     maintainer_email='guanxu@student.ubc.ca',
-    description='The safety node to prevent from crashing',
+    description='TODO: Package description',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            "safety_node = safety.safety_node:main"
+            'wall_follow_node = wall_follow.wall_follow:main',
         ],
     },
 )
