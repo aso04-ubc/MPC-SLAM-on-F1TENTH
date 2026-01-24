@@ -3,6 +3,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float64
+from ackermann_msgs.msg import AckermannDriveStamped
 
 import numpy as np
 
@@ -37,6 +38,9 @@ class DataProcess(Node):
         self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
 
+        # Desired distance from wall (meters)
+        self.desired_distance = 1.0
+        
         # set up PID controller
         self.PID_control = PIDControl()
 
@@ -63,11 +67,11 @@ class DataProcess(Node):
 
 
         # TBD 
-        # self.control_info_pusher = self.create_publisher(
-        #     AckermannDriveStamped,
-        #     'drive',
-        #     10
-        # )
+        self.control_info_pusher = self.create_publisher(
+            AckermannDriveStamped,
+            'drive',
+            10
+        )
 
         self.get_logger().info("Data Process Node Initialized.")
         if DEBUG:
@@ -76,7 +80,7 @@ class DataProcess(Node):
             self.pub_debug_left_angle  = self.create_publisher(Float64, "debug/left_angle", 10)
             self.pub_debug_right_dist  = self.create_publisher(Float64, "debug/right_dist", 10)
             self.pub_debug_right_angle = self.create_publisher(Float64, "debug/right_angle", 10)
-        
+            self.pub_debug_dip_steering = self.create_publisher(Float64, "debug/dip_steering", 10)
 
 
     def OnReceiveOdomInfo(self, odom_data : Odometry):
@@ -102,8 +106,8 @@ class DataProcess(Node):
 
         # get vectors on each side
         idx_middle = self.get_target_index(0.0)
-        idx_leftmost = -1
-        idx_rightmost = 0
+        idx_leftmost = self.get_target_index(np.pi / 2)
+        idx_rightmost = self.get_target_index(-np.pi / 2)
 
         # get oriented distances and angles
         left_dist, left_tangent = self.process_lidar_one_side(
@@ -122,17 +126,35 @@ class DataProcess(Node):
         right_tangent = self.kf_right_angle.update(right_tangent)
         right_dist = self.kf_right_dist.update(right_dist)
 
+        # Calculate distance error (positive = too far, negative = too close)
+        distance_error = right_dist - self.desired_distance
+        
+        # Run PID controller (follow right wall)
+        pid_command = self.PID_control.run(self, right_tangent, distance_error)
+        
+        temp_msg = AckermannDriveStamped()
+        temp_msg.drive.steering_angle = pid_command
+        temp_msg.drive.speed = 2.0  
+        
+        self.control_info_pusher.publish(temp_msg)
+        
+        if DEBUG:
+            self.get_logger().info(f"Right: dist={right_dist:.3f}, angle={right_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")
+
 
         if DEBUG:
             msg_ld = Float64(); msg_ld.data = float(left_dist)
             msg_la = Float64(); msg_la.data = float(left_tangent)
             msg_rd = Float64(); msg_rd.data = float(right_dist)
             msg_ra = Float64(); msg_ra.data = float(right_tangent)
+            msg_sd = Float64(); msg_sd.data = float(pid_command)
+            
 
             self.pub_debug_left_dist.publish(msg_ld)
             self.pub_debug_left_angle.publish(msg_la)
             self.pub_debug_right_dist.publish(msg_rd)
             self.pub_debug_right_angle.publish(msg_ra)
+            self.pub_debug_dip_steering.publish(msg_sd)
             # self.get_logger().info(f"Left dist: {left_dist:.2f}, angle: {left_tangent:.2f} | Right dist: {right_dist:.2f}, angle: {right_tangent:.2f}")
         
 

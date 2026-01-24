@@ -29,13 +29,13 @@ class PIDControl:
 
     def __init__(
         self,
-        kp: float = 14.0,
-        ki: float = 0.0,
-        kd: float = 0.09,
-        lookahead_L: float = 1.5,
-        steering_limit: float = 0.4189,   # ~24 degrees
+        kp: float = 0.3,
+        ki: float = 0.02,
+        kd: float = 0.3,
+        lookahead_L: float = 0.3,
+        steering_limit: float = 0.6,
         integral_limit: float = 1.0,
-        d_filter_alpha: float = 0.7       # alpha -> closer to 1 = smoother D
+        d_filter_alpha: float = 0       # alpha -> closer to 1 = smoother D
     ):
         # PID gains
         self.kp = kp
