@@ -64,7 +64,7 @@ private:
 private:
     // AEB logic handler
     constexpr static double s_TTCThreshold = 0.8;
-    constexpr static double s_MinimumSpeed = 0.1;
+    constexpr static double s_MinimumDistance = 0.3;
     std::atomic<double> m_CurrentSpeed{0.0};
 
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr m_ScanSubscription;

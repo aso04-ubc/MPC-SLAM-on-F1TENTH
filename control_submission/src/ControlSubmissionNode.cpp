@@ -100,8 +100,13 @@ void ControlSubmissionNode::OnProcessLaserScan(const sensor_msgs::msg::LaserScan
 
     double min_ttc = std::numeric_limits<double>::infinity();
 
+    double min_distance = std::numeric_limits<double>::infinity();
+
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
         double r = msg->ranges[i];
+
+        min_distance = std::min(min_distance, r);
+
         if (std::isnan(r) || std::isinf(r) || r < msg->range_min || r > msg->range_max) {
             continue;
         }
@@ -118,10 +123,12 @@ void ControlSubmissionNode::OnProcessLaserScan(const sensor_msgs::msg::LaserScan
     }
 
     if (min_ttc < s_TTCThreshold) {
-        if (!m_IsAEBActive.load()) {
+        if (!m_IsAEBActive.load(std::memory_order_acquire)) {
             RCLCPP_WARN(this->get_logger(), "AEB Triggered! TTC: %.3f", min_ttc);
-            m_IsAEBActive.store(true);
+            m_IsAEBActive.store(true, std::memory_order_release);
             m_ConditionVariable.notify_one();
         }
+    } else if (min_distance > s_MinimumDistance) {
+        m_IsAEBActive.store(false, std::memory_order_release);
     }
 }
