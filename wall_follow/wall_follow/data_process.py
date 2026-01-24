@@ -18,25 +18,32 @@ class DataProcess(Node):
     def __init__(self):
         super().__init__("wall_follow")
 
-        self.window_size = 100 # larger better 
+        self.window_size = 50
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
-        self.declare_parameter('kalman_angle_R', 10.0)
+        self.declare_parameter('kalman_angle_R', 300.0)
         self.declare_parameter('kalman_angle_Q', 0.1)
         kalman_angle_R = self.get_parameter('kalman_angle_R').get_parameter_value().double_value
         kalman_angle_Q = self.get_parameter('kalman_angle_Q').get_parameter_value().double_value
 
         # Distance filters
-        self.declare_parameter('kalman_distance_R', 10.0)
+        self.declare_parameter('kalman_distance_R', 100.0)
         self.declare_parameter('kalman_distance_Q', 0.1)
         kalman_distance_R = self.get_parameter('kalman_distance_R').get_parameter_value().double_value
         kalman_distance_Q = self.get_parameter('kalman_distance_Q').get_parameter_value().double_value
+
+        # steering filters
+        self.declare_parameter('kalman_steering_R', 10.0)
+        self.declare_parameter('kalman_steering_Q', 0.1)
+        kalman_steering_R = self.get_parameter('kalman_steering_R').get_parameter_value().double_value
+        kalman_steering_Q = self.get_parameter('kalman_steering_Q').get_parameter_value().double_value
 
         self.kf_left_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
         self.kf_right_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
         self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
+        self.kf_steering = SimpleKalmanFilter(kalman_steering_R, kalman_steering_Q)
 
         # Desired distance from wall (meters)
         self.desired_distance = 1.0
@@ -131,10 +138,12 @@ class DataProcess(Node):
         
         # Run PID controller (follow right wall)
         pid_command = self.PID_control.run(self, right_tangent, distance_error)
+
+        pid_command = self.kf_steering.update(pid_command)
         
         temp_msg = AckermannDriveStamped()
         temp_msg.drive.steering_angle = pid_command
-        temp_msg.drive.speed = 2.0  
+        temp_msg.drive.speed = 3.0  
         
         self.control_info_pusher.publish(temp_msg)
         
