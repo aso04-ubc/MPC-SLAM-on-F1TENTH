@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(control_submission)
-
+project(drive_controll)
 
 # Default to C99
 if(NOT CMAKE_C_STANDARD)
@@ -34,22 +33,31 @@ if(BUILD_TESTING)
 endif()
 
 add_executable(${PROJECT_NAME}
-        src/ControlSubmissionNode.cpp
         src/Main.cpp
-        src/ControlSubmissionNode.hpp)
-
-target_sources(
-  ${PROJECT_NAME}
-        PRIVATE
-        src/Main.cpp
-        src/ControlSubmissionNode.cpp
-)
+        src/Application.hpp
+        src/NodeImpl.cpp
+        src/AppPCH.h)
 
 find_package(rclcpp REQUIRED)
 find_package(dev_b7_interfaces REQUIRED)
 find_package(ackermann_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+
+
+
+install(TARGETS
+        ${PROJECT_NAME}
+        DESTINATION lib/${PROJECT_NAME}
+)
+
+include(FetchContent)
+FetchContent_Declare(argparse
+        GIT_REPOSITORY
+        https://github.com/p-ranav/argparse
+        GIT_TAG
+        v3.2)
+FetchContent_MakeAvailable(argparse)
 
 ament_target_dependencies(
         ${PROJECT_NAME}
@@ -60,9 +68,15 @@ ament_target_dependencies(
         sensor_msgs
 )
 
-install(TARGETS
+target_link_libraries(
         ${PROJECT_NAME}
-        DESTINATION lib/${PROJECT_NAME}
+        argparse::argparse
+)
+
+target_precompile_headers(
+        ${PROJECT_NAME}
+        PRIVATE
+        src/AppPCH.h
 )
 
 ament_package()
