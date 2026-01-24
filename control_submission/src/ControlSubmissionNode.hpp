@@ -23,7 +23,7 @@ namespace Impl {
     struct MyMessageComp {
         bool operator()(const dev_b7_interfaces::msg::ControlSubmissionMessage::SharedPtr& lhs,
                         const dev_b7_interfaces::msg::ControlSubmissionMessage::SharedPtr& rhs) const {
-            return lhs->priority < rhs->priority; // Item with higher priority should be popped first
+            return lhs->priority > rhs->priority; // Item with higher priority should be popped last
         }
     };
 }
