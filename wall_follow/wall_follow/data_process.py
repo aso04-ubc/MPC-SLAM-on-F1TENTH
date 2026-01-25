@@ -149,7 +149,7 @@ class DataProcess(Node):
         pid_command = self.kf_steering.update(pid_command)
         
         temp_msg = AckermannDriveStamped()
-        temp_msg = AckermannDrive()
+        temp_msg.drive = AckermannDrive()
         temp_msg.drive.steering_angle = pid_command
         temp_msg.drive.speed = 3.0  
 
