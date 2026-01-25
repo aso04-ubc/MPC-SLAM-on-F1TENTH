@@ -84,6 +84,8 @@ namespace Impl {
         m_DriveControlSubscription = this->create_subscription<dev_b7_interfaces::msg::DriveControlMessage>(
             "/drive_control", 10,
             [this](const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg) {
+                // log the message
+                RCLCPP_INFO(this->get_logger(), "Received DriveControlMessage with priority %d", msg->priority);
                 std::lock_guard lock(m_MapAccessMutex);
 
                 if (msg->active) {

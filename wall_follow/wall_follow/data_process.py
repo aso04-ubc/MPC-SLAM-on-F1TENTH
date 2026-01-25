@@ -4,6 +4,7 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float64
 from ackermann_msgs.msg import AckermannDriveStamped
+from dev_b7_interfaces.msg import DriveControlMessage
 
 import numpy as np
 
@@ -74,9 +75,15 @@ class DataProcess(Node):
 
 
         # TBD 
+        # self.control_info_pusher = self.create_publisher(
+        #     AckermannDriveStamped,
+        #     'drive',
+        #     10
+        # )
+
         self.control_info_pusher = self.create_publisher(
-            AckermannDriveStamped,
-            'drive',
+            DriveControlMessage,
+            '/drive_control',
             10
         )
 
@@ -144,8 +151,13 @@ class DataProcess(Node):
         temp_msg = AckermannDriveStamped()
         temp_msg.drive.steering_angle = pid_command
         temp_msg.drive.speed = 3.0  
+
+        full_msg = DriveControlMessage()
+        full_msg.active = True
+        full_msg.priority = 1000 # Subject to change
+        full_msg.drive = temp_msg
         
-        self.control_info_pusher.publish(temp_msg)
+        self.control_info_pusher.publish(full_msg)
         
         if DEBUG:
             self.get_logger().info(f"Right: dist={right_dist:.3f}, angle={right_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")

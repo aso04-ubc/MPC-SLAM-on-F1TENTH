@@ -14,6 +14,8 @@
 
   <depend>rclpy</depend>
   <depend>python3-numpy</depend>
+  <depend>dev_b7_interfaces</depend>
+  <depend>ackermann_msgs</depend>
 
   <export>
     <build_type>ament_python</build_type>
