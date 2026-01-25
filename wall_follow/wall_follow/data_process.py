@@ -133,22 +133,38 @@ class DataProcess(Node):
         right_tangent = self.kf_right_angle.update(right_tangent)
         right_dist = self.kf_right_dist.update(right_dist)
 
-        # Calculate distance error (positive = too far, negative = too close)
-        distance_error = right_dist - self.desired_distance
-        
-        # Run PID controller (follow right wall)
-        pid_command = self.PID_control.run(self, right_tangent, distance_error)
+        # Run PID controller with both walls data
+        # The controller will keep the car centered between walls
+        pid_command = self.PID_control.run(
+            self, 
+            left_tangent, left_dist,
+            right_tangent, right_dist
+        )
 
+
+        befast = False
+        beslow = False
+        if abs(pid_command) < 0.05:
+            pid_command = 0.0
+            befast = True
+
+        if abs(pid_command) > 0.43:
+            beslow = True
         pid_command = self.kf_steering.update(pid_command)
-        
+
         temp_msg = AckermannDriveStamped()
         temp_msg.drive.steering_angle = pid_command
-        temp_msg.drive.speed = 3.0  
+        temp_msg.drive.speed = 6.0 if befast else 1.5 if beslow else 3.0
         
         self.control_info_pusher.publish(temp_msg)
         
         if DEBUG:
-            self.get_logger().info(f"Right: dist={right_dist:.3f}, angle={right_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")
+            dist_error = (left_dist - right_dist) / 2.0
+            self.get_logger().info(
+                f"L: d={left_dist:.2f} a={left_tangent:.2f} | "
+                f"R: d={right_dist:.2f} a={right_tangent:.2f} | "
+                f"err={dist_error:.2f} steer={pid_command:.3f}"
+            )
 
 
         if DEBUG:

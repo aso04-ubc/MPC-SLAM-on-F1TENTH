@@ -51,7 +51,7 @@ class SafetyNode(Node):
         )
         
         self.current_speed = 0.0
-        self.ttc_thresholds = 0.5
+        self.ttc_thresholds = 0.2
         self.ttc_threshold_distance = 0.2
 
         self.pre_frame = None
