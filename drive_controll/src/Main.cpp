@@ -1,30 +1,31 @@
 #include "Application.hpp"
 
-int main(int argc, char ** argv) {
+int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
 
     argparse::ArgumentParser parser("Drive Control Node");
 
-    double aeb_ttc_threshold = 0.8;
-    double aeb_minimum_distance = 0.3;
+    parser.add_argument("--aeb-ttc-threshold", "-t")
+          .help("Time-To-Collision threshold for AEB activation (in seconds)")
+          .default_value(0.2)
+          .scan<'g', double>();
 
-    parser.add_argument("--aeb_ttc_threshold")
-        .help("Time-To-Collision threshold for AEB activation (in seconds). Default: 0.8")
-        .default_value(std::to_string(aeb_ttc_threshold))
-        .action([&aeb_ttc_threshold](const std::string& value) {
-            aeb_ttc_threshold = std::stod(value);
-        });
+    parser.add_argument("--aeb-minimum-distance", "-d")
+          .help("Minimum distance threshold for AEB deactivation (in meters)")
+          .default_value(0.3)
+          .scan<'g', double>();
 
-    parser.add_argument("--aeb_minimum_distance")
-        .help("Minimum distance threshold for AEB activation (in meters). Default: 0.3")
-        .default_value(std::to_string(aeb_minimum_distance))
-        .action([&aeb_minimum_distance](const std::string& value) {
-            aeb_minimum_distance = std::stod(value);
-        });
+    try {
+        parser.parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        std::cerr << parser.help().str() << std::endl;
+        return -1;
+    }
 
     auto node = CreateApplicationNode(NodeCreationInfo{
-        .aeb_ttc_threshold = aeb_ttc_threshold,
-        .aeb_minimum_distance = aeb_minimum_distance
+        .aeb_ttc_threshold = parser.get<double>("--aeb-ttc-threshold"),
+        .aeb_minimum_distance = parser.get<double>("--aeb-minimum-distance"),
     });
 
     node->OnInit();
