@@ -73,17 +73,19 @@ class DataProcess(Node):
             sensor_qos
         )
 
-        self.control_info_pusher = self.create_publisher(
-            AckermannDriveStamped,
-            '/drive',
-            10
-        )
 
+        # TBD 
         # self.control_info_pusher = self.create_publisher(
-        #     DriveControlMessage,
-        #     '/drive_control',
+        #     AckermannDriveStamped,
+        #     'drive',
         #     10
         # )
+
+        self.control_info_pusher = self.create_publisher(
+            DriveControlMessage,
+            '/drive_control',
+            10
+        )
 
         self.get_logger().info("Data Process Node Initialized.")
         if DEBUG:
@@ -147,16 +149,16 @@ class DataProcess(Node):
         pid_command = self.kf_steering.update(pid_command)
         
         temp_msg = AckermannDriveStamped()
-        temp_msg.drive = AckermannDrive()
+        temp_msg = AckermannDrive()
         temp_msg.drive.steering_angle = pid_command
-        temp_msg.drive.speed = 1.0  
+        temp_msg.drive.speed = 3.0  
 
         full_msg = DriveControlMessage()
         full_msg.active = True
         full_msg.priority = 1000 # Subject to change
         full_msg.drive = temp_msg
         
-        self.control_info_pusher.publish(temp_msg)
+        self.control_info_pusher.publish(full_msg)
         
         if DEBUG:
             self.get_logger().info(f"Right: dist={right_dist:.3f}, angle={right_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")
@@ -227,4 +229,3 @@ class DataProcess(Node):
         
 
         
-
