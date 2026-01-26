@@ -28,19 +28,15 @@ int main(int argc, char** argv) {
     info.aeb_minimum_distance = parser.get<double>("--aeb-minimum-distance");
 
     auto node = CreateApplicationNode(info);
-
-    rclcpp::executors::MultiThreadedExecutor::SharedPtr executor =
-        rclcpp::executors::MultiThreadedExecutor::make_shared(rclcpp::ExecutorOptions(), 4);
     node->configure();
-    SetExecutorCurrent(node, executor);
 
-    executor->add_node(node->get_node_base_interface());
+    auto executionContext = std::make_shared<ExecutionContextMultithreaded>(4);
 
+    executionContext->Attach(node);
     node->activate();
-
-    executor->spin();
-
+    executionContext->Spin();
     node->deactivate();
+
     node->cleanup();
 
     rclcpp::shutdown();
