@@ -12,7 +12,7 @@ int main(int argc, char** argv) {
 
     parser.add_argument("--aeb-minimum-distance", "-d")
           .help("Minimum distance threshold for AEB deactivation (in meters)")
-          .default_value(0.35)
+          .default_value(0.5)
           .scan<'g', double>();
 
     try {
@@ -23,14 +23,20 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    auto node = CreateApplicationNode(NodeCreationInfo{
-        .aeb_ttc_threshold = parser.get<double>("--aeb-ttc-threshold"),
-        .aeb_minimum_distance = parser.get<double>("--aeb-minimum-distance"),
-    });
+    auto node = CreateApplicationNode(
+        NodeCreationInfo{
+            parser.get<double>("--aeb-ttc-threshold"),
+            parser.get<double>("--aeb-minimum-distance"),
+        });
 
     node->OnInit();
 
-    rclcpp::spin(node);
+    rclcpp::ExecutorOptions options;
+    auto executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>(options, 4);
+    executor->add_node(node);
+    executor->spin();
+    executor->remove_node(node);
+    executor.reset();
 
     node->OnDestroy();
 

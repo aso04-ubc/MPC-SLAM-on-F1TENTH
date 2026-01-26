@@ -79,7 +79,7 @@ class DataProcess(Node):
 
         self.control_info_pusher = self.create_publisher(
             DriveControlMessage,
-            '/drive_control',
+            DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
             10
         )
 

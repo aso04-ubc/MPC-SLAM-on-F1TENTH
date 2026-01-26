@@ -8,7 +8,7 @@ namespace Impl {
         DriveControl(const NodeCreationInfo& info)
             : LifeTimeNode("drive_control_node"),
               TTCThreshold(info.aeb_ttc_threshold),
-              MinimumDistance(info.aeb_minimum_distance) {
+              DistanceThreshold(info.aeb_minimum_distance) {
         }
 
     private:
@@ -37,7 +37,7 @@ namespace Impl {
     public:
         // AEB logic handler
         const double TTCThreshold;
-        const double MinimumDistance;
+        const double DistanceThreshold;
 
     private:
         std::atomic<double> m_CurrentSpeed{0.0};
@@ -59,27 +59,27 @@ namespace Impl {
 
     void DriveControl::OnInit() {
         m_AEBSubmissionThread = std::thread{
-            [self = std::weak_ptr(std::static_pointer_cast<DriveControl>(shared_from_this()))] {
-                while (auto locked = self.lock()) {
-                    if (locked->m_ShouldStop.load(std::memory_order_acquire)) {
-                        break;
-                    }
-
-                    if (locked->m_IsAEBActive.load(std::memory_order_acquire)) {
-                        // Publish zero speed command
-                        ackermann_msgs::msg::AckermannDriveStamped stop_msg;
-                        {
-                            std::lock_guard lock(locked->m_LastDriveControlMessageMutex);
-                            stop_msg = locked->m_LastReceivedMessage;
+                [self = std::weak_ptr(std::static_pointer_cast<DriveControl>(shared_from_this()))] {
+                    while (auto locked = self.lock()) {
+                        if (locked->m_ShouldStop.load(std::memory_order_acquire)) {
+                            break;
                         }
-                        stop_msg.drive.speed = 0.0;
-                        locked->m_AckermannDrivePublisher->publish(stop_msg);
-                    }
 
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        if (locked->m_IsAEBActive.load(std::memory_order_acquire)) {
+                            // Publish zero speed command
+                            ackermann_msgs::msg::AckermannDriveStamped stop_msg;
+                            {
+                                std::lock_guard lock(locked->m_LastDriveControlMessageMutex);
+                                stop_msg = locked->m_LastReceivedMessage;
+                            }
+                            stop_msg.drive.speed = 0.0;
+                            locked->m_AckermannDrivePublisher->publish(stop_msg);
+                        }
+
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
                 }
-            }
-        };
+            };
 
         // Initialize subscriptions and publishers here
         m_DriveControlSubscription = this->create_subscription<dev_b7_interfaces::msg::DriveControlMessage>(
@@ -133,8 +133,7 @@ namespace Impl {
                         if (line == "exit" || line == "quit") {
                             locked->m_ShouldStop = true;
                             locked->Node::get_node_options()
-                                  .context()
-                                  ->shutdown("Shutdown requested by user command.");
+                                  .context()->shutdown("Shutdown requested by user command.");
                         } else if (line == "aeb_on") {
                             locked->m_IsAEBActive.store(true, std::memory_order_release);
                             RCLCPP_INFO(locked->get_logger(), "AEB Engaged by user command.");
@@ -189,13 +188,19 @@ namespace Impl {
             }
         }
 
-        if (min_ttc < TTCThreshold) {
+        bool is_ttc_too_low = min_ttc < TTCThreshold;
+        bool is_distance_too_low = min_distance < DistanceThreshold;
+
+        if (is_ttc_too_low || is_distance_too_low) {
             if (!m_IsAEBActive.load(std::memory_order_acquire)) {
-                RCLCPP_WARN(this->get_logger(), "AEB Triggered! TTC: %.3f", min_ttc);
+                RCLCPP_WARN(this->get_logger(), "AEB Triggered! TTC: %.3f, Distance: %.3f", min_ttc, min_distance);
                 m_IsAEBActive.store(true, std::memory_order_release);
             }
-        } else if (min_distance > MinimumDistance) {
-            m_IsAEBActive.store(false, std::memory_order_release);
+        } else {
+            if (m_IsAEBActive.load(std::memory_order_acquire)) {
+                RCLCPP_INFO(this->get_logger(), "AEB Released! TTC: %.3f, Distance: %.3f", min_ttc, min_distance);
+                m_IsAEBActive.store(false, std::memory_order_release);
+            }
         }
     }
 }

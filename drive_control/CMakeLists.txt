@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.5)
-project(drive_controll)
+project(drive_control)
 
 
-# Default to C++20
+# Default to C++
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD 14)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -28,24 +28,13 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(${PROJECT_NAME}
-        src/Main.cpp
-        src/Application.hpp
-        src/NodeImpl.cpp
-        src/AppPCH.h)
+
 
 find_package(rclcpp REQUIRED)
 find_package(dev_b7_interfaces REQUIRED)
 find_package(ackermann_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-
-
-
-install(TARGETS
-        ${PROJECT_NAME}
-        DESTINATION lib/${PROJECT_NAME}
-)
 
 include(FetchContent)
 FetchContent_Declare(argparse
@@ -55,8 +44,16 @@ FetchContent_Declare(argparse
         v3.2)
 FetchContent_MakeAvailable(argparse)
 
+SET(DRIVE_CONTROL_NODE_NAME drive_control_node)
+
+add_executable(${DRIVE_CONTROL_NODE_NAME}
+        drive_control_node/src/Main.cpp
+        drive_control_node/src/Application.hpp
+        drive_control_node/src/NodeImpl.cpp
+        drive_control_node/src/AppPCH.h)
+
 ament_target_dependencies(
-        ${PROJECT_NAME}
+        ${DRIVE_CONTROL_NODE_NAME}
         rclcpp
         dev_b7_interfaces
         ackermann_msgs
@@ -64,15 +61,26 @@ ament_target_dependencies(
         sensor_msgs
 )
 
+ament_package()
+
 target_link_libraries(
-        ${PROJECT_NAME}
+        ${DRIVE_CONTROL_NODE_NAME}
         argparse::argparse
 )
 
 target_precompile_headers(
-        ${PROJECT_NAME}
+        ${DRIVE_CONTROL_NODE_NAME}
         PRIVATE
-        src/AppPCH.h
+        drive_control_node/src/AppPCH.h
 )
 
-ament_package()
+target_compile_options(${DRIVE_CONTROL_NODE_NAME}
+        PRIVATE
+        -fconcepts
+        -Wno-pedantic
+)
+
+install(TARGETS
+        ${DRIVE_CONTROL_NODE_NAME}
+        DESTINATION lib/${PROJECT_NAME}
+)
