@@ -1,6 +1,6 @@
 
 f1tenth_gym_ros
 .idea
-build
-install
-log
+/build/
+/install/
+/log/
