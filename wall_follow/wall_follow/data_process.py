@@ -1,3 +1,6 @@
+import time
+
+from docutils.nodes import target
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -20,6 +23,8 @@ class DataProcess(Node):
         super().__init__("wall_follow")
 
         self.window_size = 50
+        # steering angle and its speed
+        self.steering_speed_relation = {0.3 : 1.5, 0.05 : 3.0, -1 : 6.0}
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
@@ -45,12 +50,11 @@ class DataProcess(Node):
         self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
         self.kf_steering = SimpleKalmanFilter(kalman_steering_R, kalman_steering_Q)
-
-        # Desired distance from wall (meters)
-        self.desired_distance = 1.0
         
         # set up PID controller
         self.PID_control = PIDControl()
+
+        self.last_time = 0
 
         # make sure to get most recent messages
         sensor_qos = QoSProfile(
@@ -73,8 +77,6 @@ class DataProcess(Node):
             sensor_qos
         )
 
-
-        # TBD 
         self.control_info_pusher = self.create_publisher(
             DriveControlMessage,
             '/drive_control',
@@ -89,6 +91,7 @@ class DataProcess(Node):
             self.pub_debug_right_dist  = self.create_publisher(Float64, "debug/right_dist", 10)
             self.pub_debug_right_angle = self.create_publisher(Float64, "debug/right_angle", 10)
             self.pub_debug_dip_steering = self.create_publisher(Float64, "debug/dip_steering", 10)
+            self.pub_debug_speed = self.create_publisher(Float64, "debug/speed", 10)
 
 
     def OnReceiveOdomInfo(self, odom_data : Odometry):
@@ -96,8 +99,13 @@ class DataProcess(Node):
         pass
 
 
-    # process usually take less than 1 ms on my machine, using window size of 100.
     def OnReceiveLaserInfo(self, lidar_data):
+
+        # to 40 Hz
+        if  time.time_ns() - self.last_time < 100000/40:
+            return
+        self.last_time = time.time_ns()
+
         # get basic info from the input data
         ranges = np.array(lidar_data.ranges)
         self.angle_increment = lidar_data.angle_increment
@@ -113,20 +121,23 @@ class DataProcess(Node):
                                neginf=lidar_data.range_min)
 
         # get vectors on each side
-        idx_middle = self.get_target_index(0.0)
-        idx_leftmost = self.get_target_index(np.pi / 2)
-        idx_rightmost = self.get_target_index(-np.pi / 2)
+        idx_middle_l = self.get_target_index(0.2)
+        idx_middle_r = self.get_target_index(0.2)
+        idx_leftmost = self.get_target_index((np.pi / 2) )
+        idx_rightmost = self.get_target_index((-np.pi / 2))
 
         # get oriented distances and angles
         left_dist, left_tangent = self.process_lidar_one_side(
-            ranges[idx_middle : idx_leftmost], 
-            all_angles[idx_middle : idx_leftmost]
+            ranges[idx_middle_l : idx_leftmost],
+            all_angles[idx_middle_l : idx_leftmost]
         )
+        left_dist = max(left_dist, min(ranges[idx_middle_l:]))
 
         right_dist, right_tangent = self.process_lidar_one_side(
-            ranges[idx_rightmost : idx_middle], 
-            all_angles[idx_rightmost : idx_middle]
+            ranges[idx_rightmost : idx_middle_r],
+            all_angles[idx_rightmost : idx_middle_r]
         )
+        right_dist = max(right_dist, min(ranges[:idx_middle_r]))
 
         # Apply Kalman Filter to smooth the results
         left_tangent = self.kf_left_angle.update(left_tangent)
@@ -143,20 +154,26 @@ class DataProcess(Node):
         )
 
 
-        befast = False
-        beslow = False
         if abs(pid_command) < 0.05:
             pid_command = 0.0
-            befast = True
 
-        if abs(pid_command) > 0.43:
-            beslow = True
         pid_command = self.kf_steering.update(pid_command)
+
+        abs_steering = abs(pid_command)
+
+        target_speed = 0
+        for angle, speed in self.steering_speed_relation.items():
+            if angle == -1:
+                target_speed = speed
+                break
+            if abs_steering > angle:
+                target_speed = speed
+                break
 
         temp_msg = AckermannDriveStamped()
         temp_msg.drive = AckermannDrive()
         temp_msg.drive.steering_angle = pid_command
-        temp_msg.drive.speed = 6.0 if befast else 1.5 if beslow else 3.0
+        temp_msg.drive.speed = target_speed
 
         full_msg = DriveControlMessage()
         full_msg.active = True
@@ -180,6 +197,7 @@ class DataProcess(Node):
             msg_rd = Float64(); msg_rd.data = float(right_dist)
             msg_ra = Float64(); msg_ra.data = float(right_tangent)
             msg_sd = Float64(); msg_sd.data = float(pid_command)
+            msg_sp = Float64(); msg_sp.data = float(target_speed)
             
 
             self.pub_debug_left_dist.publish(msg_ld)
@@ -187,6 +205,7 @@ class DataProcess(Node):
             self.pub_debug_right_dist.publish(msg_rd)
             self.pub_debug_right_angle.publish(msg_ra)
             self.pub_debug_dip_steering.publish(msg_sd)
+            self.pub_debug_speed.publish(msg_sp)
             # self.get_logger().info(f"Left dist: {left_dist:.2f}, angle: {left_tangent:.2f} | Right dist: {right_dist:.2f}, angle: {right_tangent:.2f}")
         
 
@@ -230,6 +249,7 @@ class DataProcess(Node):
 
         tangent_angle = np.arctan(m)
 
+        # make sure does not measure the distance to "fake line"
         return dist, tangent_angle
 
     def get_target_index(self,  target_angle : float):

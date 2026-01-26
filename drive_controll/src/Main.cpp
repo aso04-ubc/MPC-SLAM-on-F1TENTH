@@ -7,7 +7,7 @@ int main(int argc, char** argv) {
 
     parser.add_argument("--aeb-ttc-threshold", "-t")
           .help("Time-To-Collision threshold for AEB activation (in seconds)")
-          .default_value(0.5)
+          .default_value(0.3)
           .scan<'g', double>();
 
     parser.add_argument("--aeb-minimum-distance", "-d")
