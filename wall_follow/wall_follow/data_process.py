@@ -121,8 +121,8 @@ class DataProcess(Node):
                                neginf=lidar_data.range_min)
 
         # get vectors on each side
-        idx_middle_l = self.get_target_index(0.2)
-        idx_middle_r = self.get_target_index(0.2)
+        idx_middle_l = self.get_target_index(0)
+        idx_middle_r = self.get_target_index(0)
         idx_leftmost = self.get_target_index((np.pi / 2) )
         idx_rightmost = self.get_target_index((-np.pi / 2))
 

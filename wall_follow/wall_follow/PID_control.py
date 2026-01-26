@@ -34,7 +34,7 @@ class PIDControl:
         self,
         kp: float = 0.3,
         ki: float = 0.02,
-        kd: float = 0.25,
+        kd: float = 0.3,
         kp_heading: float = 0.8,
         lookahead_L: float = 0.2,
         steering_limit: float = 0.6,
