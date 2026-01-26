@@ -24,7 +24,7 @@ class DataProcess(Node):
 
         self.window_size = 50
         # steering angle and its speed
-        self.steering_speed_relation = {0.3 : 1.5, 0.05 : 3.0, -1 : 6.0}
+        self.steering_speed_relation = {0.3 : 1.5, 0.1 : 3.0, -1 : 6.0}
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
@@ -154,7 +154,7 @@ class DataProcess(Node):
         )
 
 
-        if abs(pid_command) < 0.05:
+        if abs(pid_command) < list(self.steering_speed_relation)[-2]:
             pid_command = 0.0
 
         pid_command = self.kf_steering.update(pid_command)
