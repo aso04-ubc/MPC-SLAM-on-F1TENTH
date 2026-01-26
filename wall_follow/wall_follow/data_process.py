@@ -47,7 +47,7 @@ class DataProcess(Node):
         self.kf_steering = SimpleKalmanFilter(kalman_steering_R, kalman_steering_Q)
 
         # Desired distance from wall (meters)
-        self.desired_distance = 1.0
+        self.desired_distance = 0.7
         
         # set up PID controller
         self.PID_control = PIDControl()
@@ -141,12 +141,12 @@ class DataProcess(Node):
         right_dist = self.kf_right_dist.update(right_dist)
 
         # Calculate distance error (positive = too far, negative = too close)
-        distance_error = right_dist - self.desired_distance
+        distance_error = left_dist - self.desired_distance
         
         # Run PID controller (follow right wall)
-        pid_command = self.PID_control.run(self, right_tangent, distance_error)
+        pid_command = self.PID_control.run(self, left_tangent, distance_error)
 
-        pid_command = self.kf_steering.update(pid_command)
+        pid_command = self.kf_steering.update(-pid_command)
         
         temp_msg = AckermannDriveStamped()
         temp_msg.drive = AckermannDrive()
@@ -161,7 +161,7 @@ class DataProcess(Node):
         self.control_info_pusher.publish(full_msg)
         
         if DEBUG:
-            self.get_logger().info(f"Right: dist={right_dist:.3f}, angle={right_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")
+            self.get_logger().info(f"Right: dist={left_dist:.3f}, angle={left_tangent:.3f}, error={distance_error:.3f}, steering={pid_command:.3f}")
 
 
         if DEBUG:

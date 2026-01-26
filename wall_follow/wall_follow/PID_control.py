@@ -29,9 +29,9 @@ class PIDControl:
 
     def __init__(
         self,
-        kp: float = 0.3,
-        ki: float = 0.02,
-        kd: float = 0.3,
+        kp: float = 5,
+        ki: float = 1,
+        kd: float = 1,
         lookahead_L: float = 0.3,
         steering_limit: float = 0.6,
         integral_limit: float = 1.0,
