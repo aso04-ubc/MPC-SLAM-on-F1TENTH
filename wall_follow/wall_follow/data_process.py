@@ -3,7 +3,8 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float64
-from ackermann_msgs.msg import AckermannDriveStamped
+from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
+from dev_b7_interfaces.msg import DriveControlMessage
 
 import numpy as np
 
@@ -75,8 +76,8 @@ class DataProcess(Node):
 
         # TBD 
         self.control_info_pusher = self.create_publisher(
-            AckermannDriveStamped,
-            'drive',
+            DriveControlMessage,
+            '/drive_control',
             10
         )
 
@@ -136,7 +137,7 @@ class DataProcess(Node):
         # Run PID controller with both walls data
         # The controller will keep the car centered between walls
         pid_command = self.PID_control.run(
-            self, 
+            self,
             left_tangent, left_dist,
             right_tangent, right_dist
         )
@@ -153,10 +154,16 @@ class DataProcess(Node):
         pid_command = self.kf_steering.update(pid_command)
 
         temp_msg = AckermannDriveStamped()
+        temp_msg.drive = AckermannDrive()
         temp_msg.drive.steering_angle = pid_command
         temp_msg.drive.speed = 6.0 if befast else 1.5 if beslow else 3.0
-        
-        self.control_info_pusher.publish(temp_msg)
+
+        full_msg = DriveControlMessage()
+        full_msg.active = True
+        full_msg.priority = 1000 # Subject to change
+        full_msg.drive = temp_msg
+
+        self.control_info_pusher.publish(full_msg)
         
         if DEBUG:
             dist_error = (left_dist - right_dist) / 2.0

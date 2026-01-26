@@ -23,7 +23,7 @@ namespace Impl {
     struct MyMessageComp {
         bool operator()(const dev_b7_interfaces::msg::ControlSubmissionMessage::SharedPtr& lhs,
                         const dev_b7_interfaces::msg::ControlSubmissionMessage::SharedPtr& rhs) const {
-            return lhs->priority < rhs->priority; // Item with higher priority should be popped first
+            return lhs->priority > rhs->priority; // Item with higher priority should be popped last
         }
     };
 }
@@ -64,7 +64,7 @@ private:
 private:
     // AEB logic handler
     constexpr static double s_TTCThreshold = 0.8;
-    constexpr static double s_MinimumSpeed = 0.1;
+    constexpr static double s_MinimumDistance = 0.3;
     std::atomic<double> m_CurrentSpeed{0.0};
 
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr m_ScanSubscription;
@@ -73,6 +73,9 @@ private:
     // Integrate AEB directly in this node for lower latency
     void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg);
     void OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+
+private:
+    std::thread m_ConsoleInputListenerThread;
 };
 
 #endif //CONTROL_SUBMISSION_CONTROLSUBMISSIONNODE_HPP

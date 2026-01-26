@@ -6,9 +6,9 @@ if (NOT CMAKE_C_STANDARD)
     set(CMAKE_C_STANDARD 99)
 endif ()
 
-# Default to C++14
+# Default to C++20
 if (NOT CMAKE_CXX_STANDARD)
-    set(CMAKE_CXX_STANDARD 14)
+    set(CMAKE_CXX_STANDARD 20)
 endif ()
 
 if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -37,6 +37,7 @@ find_package(ackermann_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
         "msg/ControlSubmissionMessage.msg"
+        "msg/DriveControlMessage.msg"
         DEPENDENCIES ackermann_msgs
 )
 

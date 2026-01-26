@@ -25,7 +25,7 @@ void ControlSubmissionNode::OnInit() {
     m_AckermannDrivePublisher = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(
         "/drive", 10);
 
-    m_SubmitterThread = std::thread([this]() {
+    m_SubmitterThread = std::thread([this] {
         while (!m_ShouldStop.load(std::memory_order_acquire)) {
             dev_b7_interfaces::msg::ControlSubmissionMessage::SharedPtr msg;
 
@@ -58,6 +58,25 @@ void ControlSubmissionNode::OnInit() {
             }
         }
     });
+
+    m_ConsoleInputListenerThread = std::thread([this] {
+        while (!m_ShouldStop.load(std::memory_order_acquire)) {
+            std::string input;
+            std::getline(std::cin, input);
+            if (input == "exit" || input == "quit") {
+                m_ShouldStop.store(true, std::memory_order_release);
+                m_ConditionVariable.notify_all();
+                RCLCPP_INFO(this->get_logger(), "Shutdown requested by user command.");
+                Node::get_node_options()
+                    .context()->shutdown("User requested shutdown.");
+            } else if (input == "release_aeb") {
+                m_IsAEBActive.store(false, std::memory_order_release);
+                RCLCPP_INFO(this->get_logger(), "AEB Released by user command.");
+            } else {
+                RCLCPP_WARN(this->get_logger(), "Unknown command %s", input.c_str());
+            }
+        }
+    });
 }
 
 void ControlSubmissionNode::OnDestroy() {
@@ -67,6 +86,9 @@ void ControlSubmissionNode::OnDestroy() {
     if (m_SubmitterThread.joinable()) {
         m_SubmitterThread.join();
     }
+
+    m_ConsoleInputListenerThread.detach(); // Detach since it may be blocked on std::getline,
+    // we don't care about the resource leak anyways because we are terminating.
 }
 
 void ControlSubmissionNode::OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -75,15 +97,16 @@ void ControlSubmissionNode::OnProcessOdometry(const nav_msgs::msg::Odometry::Sha
 
 void ControlSubmissionNode::OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
     double v = m_CurrentSpeed.load(std::memory_order_acquire);
-    if (v < s_MinimumSpeed) {
-        m_IsAEBActive.store(false);
-        return;
-    }
 
     double min_ttc = std::numeric_limits<double>::infinity();
 
+    double min_distance = std::numeric_limits<double>::infinity();
+
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
         double r = msg->ranges[i];
+
+        min_distance = std::min(min_distance, r);
+
         if (std::isnan(r) || std::isinf(r) || r < msg->range_min || r > msg->range_max) {
             continue;
         }
@@ -100,13 +123,12 @@ void ControlSubmissionNode::OnProcessLaserScan(const sensor_msgs::msg::LaserScan
     }
 
     if (min_ttc < s_TTCThreshold) {
-        if (!m_IsAEBActive.load()) {
+        if (!m_IsAEBActive.load(std::memory_order_acquire)) {
             RCLCPP_WARN(this->get_logger(), "AEB Triggered! TTC: %.3f", min_ttc);
-            m_IsAEBActive.store(true);
+            m_IsAEBActive.store(true, std::memory_order_release);
             m_ConditionVariable.notify_one();
         }
-    }
-    else {
-        m_IsAEBActive.store(false); // Could be a bad idea? Let's see if it works.
+    } else if (min_distance > s_MinimumDistance) {
+        m_IsAEBActive.store(false, std::memory_order_release);
     }
 }
