@@ -83,7 +83,7 @@ namespace Impl {
 
         // Initialize subscriptions and publishers here
         m_DriveControlSubscription = this->create_subscription<dev_b7_interfaces::msg::DriveControlMessage>(
-            "/drive_control", 10,
+            dev_b7_interfaces::msg::DriveControlMessage::BUILTIN_TOPIC_NAME_STRING, 10,
             [this](const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg) {
                 // log the message
                 RCLCPP_INFO(this->get_logger(), "Received DriveControlMessage with priority %d", msg->priority);
