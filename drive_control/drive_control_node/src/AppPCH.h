@@ -1,6 +1,7 @@
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,3 +17,7 @@
 #include <dev_b7_interfaces/msg/drive_control_message.hpp>
 
 #include <argparse/argparse.hpp>
+
+// for non-blocking console inp
+#include <poll.h>
+#include <unistd.h>

@@ -7,13 +7,8 @@ struct NodeCreationInfo {
     double aeb_minimum_distance = 0.3;
 };
 
-class LifeTimeNode : public rclcpp::Node {
-public:
-    using Node::Node;
+std::shared_ptr<rclcpp_lifecycle::LifecycleNode> CreateApplicationNode(const NodeCreationInfo& creation_info);
 
-    virtual void OnInit() = 0;
-    virtual void OnDestroy() = 0;
-};
-
-std::shared_ptr<LifeTimeNode> CreateApplicationNode(const NodeCreationInfo& creation_info);
-
+void SetExecutorCurrent(
+    const std::shared_ptr<rclcpp_lifecycle::LifecycleNode>& node,
+    const std::shared_ptr<rclcpp::Executor>& executor);

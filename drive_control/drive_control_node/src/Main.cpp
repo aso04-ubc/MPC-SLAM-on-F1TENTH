@@ -7,7 +7,7 @@ int main(int argc, char** argv) {
 
     parser.add_argument("--aeb-ttc-threshold", "-t")
           .help("Time-To-Collision threshold for AEB activation (in seconds)")
-          .default_value(0.2)
+          .default_value(0.3)
           .scan<'g', double>();
 
     parser.add_argument("--aeb-minimum-distance", "-d")
@@ -23,22 +23,25 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    auto node = CreateApplicationNode(
-        NodeCreationInfo{
-            parser.get<double>("--aeb-ttc-threshold"),
-            parser.get<double>("--aeb-minimum-distance"),
-        });
+    NodeCreationInfo info;
+    info.aeb_ttc_threshold = parser.get<double>("--aeb-ttc-threshold");
+    info.aeb_minimum_distance = parser.get<double>("--aeb-minimum-distance");
 
-    node->OnInit();
+    auto node = CreateApplicationNode(info);
 
-    rclcpp::ExecutorOptions options;
-    auto executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>(options, 4);
-    executor->add_node(node);
+    rclcpp::executors::MultiThreadedExecutor::SharedPtr executor =
+        rclcpp::executors::MultiThreadedExecutor::make_shared(rclcpp::ExecutorOptions(), 4);
+    node->configure();
+    SetExecutorCurrent(node, executor);
+
+    executor->add_node(node->get_node_base_interface());
+
+    node->activate();
+
     executor->spin();
-    executor->remove_node(node);
-    executor.reset();
 
-    node->OnDestroy();
+    node->deactivate();
+    node->cleanup();
 
     rclcpp::shutdown();
     return 0;

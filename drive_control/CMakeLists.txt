@@ -35,6 +35,7 @@ find_package(dev_b7_interfaces REQUIRED)
 find_package(ackermann_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(argparse
@@ -59,6 +60,7 @@ ament_target_dependencies(
         ackermann_msgs
         nav_msgs
         sensor_msgs
+        rclcpp_lifecycle
 )
 
 ament_package()

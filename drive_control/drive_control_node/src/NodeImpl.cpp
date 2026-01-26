@@ -1,210 +1,263 @@
 #include "Application.hpp"
 
 namespace Impl {
-    class DriveControl : public LifeTimeNode {
-    public:
-        virtual ~DriveControl() override = default;
+    using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
+    class DriveControl : public rclcpp_lifecycle::LifecycleNode {
+    public:
         DriveControl(const NodeCreationInfo& info)
-            : LifeTimeNode("drive_control_node"),
+            : LifecycleNode("drive_control_node"),
               TTCThreshold(info.aeb_ttc_threshold),
               DistanceThreshold(info.aeb_minimum_distance) {
+            RCLCPP_INFO(get_logger(), "DriveControl Node Object Created.");
+        }
+
+        virtual ~DriveControl() {
+            StopThreads();
+        }
+
+
+        CallbackReturn on_configure(const rclcpp_lifecycle::State&) override {
+            RCLCPP_INFO(get_logger(), "Configuring: Initializing Subscriptions and Publishers...");
+
+            m_AckermannDrivePublisher = this->create_publisher<
+                ackermann_msgs::msg::AckermannDriveStamped>("/drive", 10);
+
+            m_DriveControlSubscription = this->create_subscription<dev_b7_interfaces::msg::DriveControlMessage>(
+                dev_b7_interfaces::msg::DriveControlMessage::BUILTIN_TOPIC_NAME_STRING, 10,
+                std::bind(&DriveControl::OnDriveCommand, this, std::placeholders::_1));
+
+            m_ScanSubscription = this->create_subscription<sensor_msgs::msg::LaserScan>(
+                "/scan", 10, std::bind(&DriveControl::OnProcessLaserScan, this, std::placeholders::_1));
+
+            m_OdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>(
+                "/ego_racecar/odom", 10, std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
+
+            return CallbackReturn::SUCCESS;
+        }
+
+        CallbackReturn on_activate(const rclcpp_lifecycle::State&) override {
+            RCLCPP_INFO(get_logger(), "Activating: Starting Control Threads...");
+
+
+            m_ShouldStop.store(false, std::memory_order_release);
+            m_AEBSubmissionThread = std::thread(&DriveControl::AEBLoop, this);
+            m_ConsoleInputListenerThread = std::thread(&DriveControl::ConsoleLoop, this);
+
+            m_AckermannDrivePublisher->on_activate();
+
+            return CallbackReturn::SUCCESS;
+        }
+
+        CallbackReturn on_deactivate(const rclcpp_lifecycle::State&) override {
+            RCLCPP_INFO(get_logger(), "Deactivating: Stopping Threads...");
+
+            m_AckermannDrivePublisher->on_deactivate();
+
+            StopThreads();
+
+            return CallbackReturn::SUCCESS;
+        }
+
+        CallbackReturn on_cleanup(const rclcpp_lifecycle::State&) override {
+            RCLCPP_INFO(get_logger(), "Cleaning up resources...");
+            m_AckermannDrivePublisher.reset();
+            m_DriveControlSubscription.reset();
+            m_ScanSubscription.reset();
+            m_OdomSubscription.reset();
+            return CallbackReturn::SUCCESS;
+        }
+
+        CallbackReturn on_shutdown(const rclcpp_lifecycle::State&) override {
+            RCLCPP_INFO(get_logger(), "Shutting down node...");
+            StopThreads();
+            return CallbackReturn::SUCCESS;
         }
 
     private:
-        virtual void OnInit() override;
-        virtual void OnDestroy() override;
+        void AEBLoop() {
+            while (rclcpp::ok() && !m_ShouldStop.load(std::memory_order_acquire)) {
+                if (m_IsAEBActive.load(std::memory_order_acquire)) {
+                    ackermann_msgs::msg::AckermannDriveStamped stop_msg;
+                    stop_msg.header.stamp = this->now();
+                    stop_msg.header.frame_id = "base_link";
+
+                    {
+                        std::unique_lock lock(m_LastDriveControlMessageMutex, std::chrono::milliseconds(10));
+                        if (lock.owns_lock()) {
+                            stop_msg = m_LastReceivedMessage;
+                        }
+                    }
+                    stop_msg.drive.speed = 0.0;
+                    m_AckermannDrivePublisher->publish(stop_msg);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+
+        void ConsoleLoop() {
+            pollfd fd{};
+            fd.fd = STDIN_FILENO;
+            fd.events = POLLIN;
+
+            while (rclcpp::ok() && !m_ShouldStop.load(std::memory_order_acquire)) {
+                int ret = poll(&fd, 1, 100);
+
+                if (ret < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+
+                if (ret > 0 && fd.revents & POLLIN) {
+                    std::string line;
+                    if (std::getline(std::cin, line)) {
+                        if (line == "exit" || line == "quit") {
+                            m_ShouldStop.store(true, std::memory_order_release);
+                            if (auto executor = m_CurrentExecutor.lock()) {
+                                executor->cancel();
+                            }
+                            this->m_CurrentExecutor.reset();
+                            break;
+                        } else if (line == "aeb_on") {
+                            m_IsAEBActive.store(true, std::memory_order_release);
+                            RCLCPP_WARN(get_logger(), "AEB Engaged manually.");
+                        } else if (line == "aeb_off") {
+                            m_IsAEBActive.store(false, std::memory_order_release);
+                            RCLCPP_INFO(get_logger(), "AEB Released manually.");
+                        } else if (!line.empty()) {
+                            RCLCPP_INFO(get_logger(), "Unknown command: %s", line.c_str());
+                        }
+                    }
+                }
+            }
+            RCLCPP_INFO(get_logger(), "ConsoleLoop thread exiting.");
+        }
+
+        void StopThreads() {
+            m_ShouldStop.store(true, std::memory_order_release);
+
+            if (m_AEBSubmissionThread.joinable()) {
+                m_AEBSubmissionThread.join();
+            }
+
+            if (m_ConsoleInputListenerThread.joinable()) {
+                m_ConsoleInputListenerThread.join();
+            }
+        }
+
+        void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
+            m_CurrentSpeed.store(msg->twist.twist.linear.x, std::memory_order_release);
+        }
+
+        void OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+            double v = m_CurrentSpeed.load(std::memory_order_acquire);
+            double min_ttc = std::numeric_limits<double>::infinity();
+            double min_distance = std::numeric_limits<double>::infinity();
+
+            for (size_t i = 0; i < msg->ranges.size(); ++i) {
+                double r = msg->ranges[i];
+
+                if (std::isnan(r) || std::isinf(r) || r < msg->range_min || r > msg->range_max) {
+                    continue;
+                }
+
+                min_distance = std::min(min_distance, r);
+
+                double angle = msg->angle_min + i * msg->angle_increment;
+                double range_rate = v * std::cos(angle);
+
+                if (range_rate > 0) {
+                    double ttc = r / range_rate;
+                    if (ttc < min_ttc) {
+                        min_ttc = ttc;
+                    }
+                }
+            }
+
+            if (min_ttc < TTCThreshold || min_distance < DistanceThreshold) {
+                if (!m_IsAEBActive.load(std::memory_order_acquire)) {
+                    RCLCPP_ERROR(get_logger(), "AEB TRIGGERED! TTC: %.3f s, Dist: %.3f m", min_ttc, min_distance);
+                    m_IsAEBActive.store(true, std::memory_order_release);
+                }
+            } else {
+                if (m_IsAEBActive.load(std::memory_order_acquire)) {
+                    m_IsAEBActive.store(false, std::memory_order_release);
+                    RCLCPP_INFO(get_logger(), "AEB Released.");
+                }
+            }
+        }
+
+        void OnDriveCommand(const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg) {
+            {
+                std::lock_guard<std::mutex> lock(m_MapAccessMutex);
+                if (msg->active) {
+                    mPriorityToLastMessageMap[msg->priority] = msg;
+                } else {
+                    mPriorityToLastMessageMap.erase(msg->priority);
+                    goto handle_message_store;
+                }
+
+                if (auto highest_priority_msg(
+                        mPriorityToLastMessageMap.rbegin()->second);
+                    highest_priority_msg && !m_IsAEBActive.load(std::memory_order_acquire)) {
+                    m_AckermannDrivePublisher->publish(highest_priority_msg->drive);
+                }
+            }
+
+        handle_message_store: // I know this is ugly.
+
+            {
+                std::lock_guard<std::timed_mutex> lock(m_LastDriveControlMessageMutex);
+                m_LastReceivedMessage = msg->drive;
+            }
+        }
 
     private:
-        std::mutex m_MapAccessMutex{};
-        std::map<
-            int32_t,
-            dev_b7_interfaces::msg::DriveControlMessage::SharedPtr
-        > mPriorityToLastMessageMap{};
-
-        // std::atomic_int32_t m_CurrentPriority{0};
-
-        std::atomic_bool m_IsAEBActive{false};
-
-        std::atomic_bool m_ShouldStop{false};
-
-        std::thread m_AEBSubmissionThread;
-
-    private:
-        rclcpp::Subscription<dev_b7_interfaces::msg::DriveControlMessage>::SharedPtr m_DriveControlSubscription;
-        rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr m_AckermannDrivePublisher;
-
-    public:
-        // AEB logic handler
         const double TTCThreshold;
         const double DistanceThreshold;
 
     private:
         std::atomic<double> m_CurrentSpeed{0.0};
-
-        rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr m_ScanSubscription;
-        rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr m_OdomSubscription;
-
-        // Integrate AEB directly in this node for lower latency
-        void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg);
-        void OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+        std::atomic<bool> m_IsAEBActive{false};
+        std::atomic<bool> m_ShouldStop{false};
 
     private:
+        std::mutex m_MapAccessMutex;
+        std::map<int32_t, dev_b7_interfaces::msg::DriveControlMessage::SharedPtr> mPriorityToLastMessageMap;
+
+        std::timed_mutex m_LastDriveControlMessageMutex;
+        ackermann_msgs::msg::AckermannDriveStamped m_LastReceivedMessage;
+
+    private:
+        std::thread m_AEBSubmissionThread;
         std::thread m_ConsoleInputListenerThread;
 
     private:
-        std::mutex m_LastDriveControlMessageMutex;
-        ackermann_msgs::msg::AckermannDriveStamped m_LastReceivedMessage;
+        rclcpp_lifecycle::LifecyclePublisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr
+        m_AckermannDrivePublisher;
+
+        rclcpp::Subscription<dev_b7_interfaces::msg::DriveControlMessage>::SharedPtr m_DriveControlSubscription;
+        rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr m_ScanSubscription;
+        rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr m_OdomSubscription;
+
+    private:
+        std::weak_ptr<rclcpp::Executor> m_CurrentExecutor;
+
+    public:
+        void SetCurrentExecutor(const std::shared_ptr<rclcpp::Executor>& executor) {
+            m_CurrentExecutor = executor;
+        }
     };
-
-    void DriveControl::OnInit() {
-        m_AEBSubmissionThread = std::thread{
-                [self = std::weak_ptr(std::static_pointer_cast<DriveControl>(shared_from_this()))] {
-                    while (auto locked = self.lock()) {
-                        if (locked->m_ShouldStop.load(std::memory_order_acquire)) {
-                            break;
-                        }
-
-                        if (locked->m_IsAEBActive.load(std::memory_order_acquire)) {
-                            // Publish zero speed command
-                            ackermann_msgs::msg::AckermannDriveStamped stop_msg;
-                            {
-                                std::lock_guard lock(locked->m_LastDriveControlMessageMutex);
-                                stop_msg = locked->m_LastReceivedMessage;
-                            }
-                            stop_msg.drive.speed = 0.0;
-                            locked->m_AckermannDrivePublisher->publish(stop_msg);
-                        }
-
-                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    }
-                }
-            };
-
-        // Initialize subscriptions and publishers here
-        m_DriveControlSubscription = this->create_subscription<dev_b7_interfaces::msg::DriveControlMessage>(
-            dev_b7_interfaces::msg::DriveControlMessage::BUILTIN_TOPIC_NAME_STRING, 10,
-            [this](const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg) {
-                // log the message
-                RCLCPP_INFO(this->get_logger(), "Received DriveControlMessage with priority %d", msg->priority);
-                {
-                    std::lock_guard lock(m_MapAccessMutex);
-
-                    if (msg->active) {
-                        mPriorityToLastMessageMap[msg->priority] = msg;
-                    } else {
-                        mPriorityToLastMessageMap.erase(msg->priority);
-                    }
-
-                    if (m_IsAEBActive || mPriorityToLastMessageMap.empty()) {
-                        return;
-                    }
-
-                    // Now we should publish the last message, if it is not active, it should already be erased
-                    auto last = mPriorityToLastMessageMap.rbegin()->second;
-                    if (last) {
-                        m_AckermannDrivePublisher->publish(last->drive);
-                    }
-                }
-
-                {
-                    std::lock_guard lock(m_LastDriveControlMessageMutex);
-                    m_LastReceivedMessage = msg->drive;
-                }
-            });
-
-        m_AckermannDrivePublisher = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(
-            "/drive", 10);
-
-        m_ScanSubscription = this->create_subscription<sensor_msgs::msg::LaserScan>(
-            "/scan", 10,
-            std::bind(&DriveControl::OnProcessLaserScan, this, std::placeholders::_1));
-
-        m_OdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/ego_racecar/odom", 10,
-            std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
-
-        m_ConsoleInputListenerThread =
-            std::thread{
-                [self = std::weak_ptr(std::static_pointer_cast<DriveControl>(shared_from_this()))] {
-                    std::string line;
-                    while (auto locked = self.lock()) {
-                        std::getline(std::cin, line);
-                        if (line == "exit" || line == "quit") {
-                            locked->m_ShouldStop = true;
-                            locked->Node::get_node_options()
-                                  .context()->shutdown("Shutdown requested by user command.");
-                        } else if (line == "aeb_on") {
-                            locked->m_IsAEBActive.store(true, std::memory_order_release);
-                            RCLCPP_INFO(locked->get_logger(), "AEB Engaged by user command.");
-                        } else if (line == "aeb_off") {
-                            locked->m_IsAEBActive.store(false, std::memory_order_release);
-                            RCLCPP_INFO(locked->get_logger(), "AEB Released by user command.");
-                        } else {
-                            RCLCPP_WARN(locked->get_logger(), "Unknown command %s", line.c_str());
-                        }
-                    }
-                }
-            };
-
-        RCLCPP_INFO(this->get_logger(), "DriveControl Node Initialized.");
-    }
-
-    void DriveControl::OnDestroy() {
-        m_ShouldStop.store(true, std::memory_order_release);
-
-        m_ConsoleInputListenerThread.detach(); // Detach since it may be blocked on std::getline,
-        // we don't care about the resource leak anyways because we are terminating.
-    }
-
-    void DriveControl::OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
-        m_CurrentSpeed.store(msg->twist.twist.linear.x, std::memory_order_release);
-    }
-
-    void DriveControl::OnProcessLaserScan(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-        double v = m_CurrentSpeed.load(std::memory_order_acquire);
-
-        double min_ttc = std::numeric_limits<double>::infinity();
-
-        double min_distance = std::numeric_limits<double>::infinity();
-
-        for (size_t i = 0; i < msg->ranges.size(); ++i) {
-            double r = msg->ranges[i];
-
-            min_distance = std::min(min_distance, r);
-
-            if (std::isnan(r) || std::isinf(r) || r < msg->range_min || r > msg->range_max) {
-                continue;
-            }
-
-            double angle = msg->angle_min + i * msg->angle_increment;
-            double range_rate = v * std::cos(angle);
-
-            if (range_rate > 0) {
-                double ttc = r / range_rate;
-                if (ttc < min_ttc) {
-                    min_ttc = ttc;
-                }
-            }
-        }
-
-        bool is_ttc_too_low = min_ttc < TTCThreshold;
-        bool is_distance_too_low = min_distance < DistanceThreshold;
-
-        if (is_ttc_too_low || is_distance_too_low) {
-            if (!m_IsAEBActive.load(std::memory_order_acquire)) {
-                RCLCPP_WARN(this->get_logger(), "AEB Triggered! TTC: %.3f, Distance: %.3f", min_ttc, min_distance);
-                m_IsAEBActive.store(true, std::memory_order_release);
-            }
-        } else {
-            if (m_IsAEBActive.load(std::memory_order_acquire)) {
-                RCLCPP_INFO(this->get_logger(), "AEB Released! TTC: %.3f, Distance: %.3f", min_ttc, min_distance);
-                m_IsAEBActive.store(false, std::memory_order_release);
-            }
-        }
-    }
 }
 
-std::shared_ptr<LifeTimeNode> CreateApplicationNode(const NodeCreationInfo& creation_info) {
+std::shared_ptr<rclcpp_lifecycle::LifecycleNode> CreateApplicationNode(const NodeCreationInfo& creation_info) {
     return std::make_shared<Impl::DriveControl>(creation_info);
+}
+
+void SetExecutorCurrent(
+    const std::shared_ptr<rclcpp_lifecycle::LifecycleNode>& node,
+    const std::shared_ptr<rclcpp::Executor>& executor) {
+    if (auto drive_control_node = std::dynamic_pointer_cast<Impl::DriveControl>(node)) {
+        drive_control_node->SetCurrentExecutor(executor);
+    }
 }
