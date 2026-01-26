@@ -1,13 +1,6 @@
 #include "Application.hpp"
 
 namespace Impl {
-    /*struct DriveControlMsgComp {
-        bool operator()(const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr& lhs,
-                        const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr& rhs) const {
-            return lhs->priority < rhs->priority; // Used in a map, in order to find maximum priority
-        }
-    };*/
-
     class DriveControl : public LifeTimeNode {
     public:
         virtual ~DriveControl() override = default;
@@ -58,10 +51,14 @@ namespace Impl {
 
     private:
         std::thread m_ConsoleInputListenerThread;
+
+    private:
+        std::mutex m_LastDriveControlMessageMutex;
+        ackermann_msgs::msg::AckermannDriveStamped m_LastReceivedMessage;
     };
 
     void DriveControl::OnInit() {
-        m_AEBSubmissionThread = std::thread {
+        m_AEBSubmissionThread = std::thread{
             [self = std::weak_ptr(std::static_pointer_cast<DriveControl>(shared_from_this()))] {
                 while (auto locked = self.lock()) {
                     if (locked->m_ShouldStop.load(std::memory_order_acquire)) {
@@ -71,6 +68,10 @@ namespace Impl {
                     if (locked->m_IsAEBActive.load(std::memory_order_acquire)) {
                         // Publish zero speed command
                         ackermann_msgs::msg::AckermannDriveStamped stop_msg;
+                        {
+                            std::lock_guard lock(locked->m_LastDriveControlMessageMutex);
+                            stop_msg = locked->m_LastReceivedMessage;
+                        }
                         stop_msg.drive.speed = 0.0;
                         locked->m_AckermannDrivePublisher->publish(stop_msg);
                     }
@@ -86,22 +87,29 @@ namespace Impl {
             [this](const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg) {
                 // log the message
                 RCLCPP_INFO(this->get_logger(), "Received DriveControlMessage with priority %d", msg->priority);
-                std::lock_guard lock(m_MapAccessMutex);
+                {
+                    std::lock_guard lock(m_MapAccessMutex);
 
-                if (msg->active) {
-                    mPriorityToLastMessageMap[msg->priority] = msg;
-                } else {
-                    mPriorityToLastMessageMap.erase(msg->priority);
+                    if (msg->active) {
+                        mPriorityToLastMessageMap[msg->priority] = msg;
+                    } else {
+                        mPriorityToLastMessageMap.erase(msg->priority);
+                    }
+
+                    if (m_IsAEBActive || mPriorityToLastMessageMap.empty()) {
+                        return;
+                    }
+
+                    // Now we should publish the last message, if it is not active, it should already be erased
+                    auto last = mPriorityToLastMessageMap.rbegin()->second;
+                    if (last) {
+                        m_AckermannDrivePublisher->publish(last->drive);
+                    }
                 }
 
-                if (m_IsAEBActive || mPriorityToLastMessageMap.empty()) {
-                    return;
-                }
-
-                // Now we should publish the last message, if it is not active, it should already be erased
-                auto last = mPriorityToLastMessageMap.rbegin()->second;
-                if (last) {
-                    m_AckermannDrivePublisher->publish(last->drive);
+                {
+                    std::lock_guard lock(m_LastDriveControlMessageMutex);
+                    m_LastReceivedMessage = msg->drive;
                 }
             });
 
@@ -111,7 +119,7 @@ namespace Impl {
         m_ScanSubscription = this->create_subscription<sensor_msgs::msg::LaserScan>(
             "/scan", 10,
             std::bind(&DriveControl::OnProcessLaserScan, this, std::placeholders::_1));
-        
+
         m_OdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>(
             "/ego_racecar/odom", 10,
             std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
@@ -125,8 +133,8 @@ namespace Impl {
                         if (line == "exit" || line == "quit") {
                             locked->m_ShouldStop = true;
                             locked->Node::get_node_options()
-                                .context()
-                                ->shutdown("Shutdown requested by user command.");
+                                  .context()
+                                  ->shutdown("Shutdown requested by user command.");
                         } else if (line == "aeb_on") {
                             locked->m_IsAEBActive.store(true, std::memory_order_release);
                             RCLCPP_INFO(locked->get_logger(), "AEB Engaged by user command.");
@@ -190,7 +198,6 @@ namespace Impl {
             m_IsAEBActive.store(false, std::memory_order_release);
         }
     }
-
 }
 
 std::shared_ptr<LifeTimeNode> CreateApplicationNode(const NodeCreationInfo& creation_info) {
