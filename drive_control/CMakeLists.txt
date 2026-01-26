@@ -51,7 +51,9 @@ add_executable(${DRIVE_CONTROL_NODE_NAME}
         drive_control_node/src/Main.cpp
         drive_control_node/src/Application.hpp
         drive_control_node/src/NodeImpl.cpp
-        drive_control_node/src/AppPCH.h)
+        drive_control_node/src/AppPCH.h
+        drive_control_node/src/ExecutionContext.hpp
+        drive_control_node/src/ExecutionContext.cpp)
 
 ament_target_dependencies(
         ${DRIVE_CONTROL_NODE_NAME}
