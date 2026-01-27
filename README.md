@@ -160,7 +160,7 @@ If the minimum TTC across beams falls below the TTC threshold or the minimum ran
 1. [Overview](https://youtu.be/etvGP7EX9d0) : Shows how car run in Spielberg map
 2. [Sharp Turn](https://youtu.be/IwhlQQPrbYY) : Shows the ability to take a sharp turn
 3. [90 Degree Turn]( https://youtu.be/qFoOQlBKXjI) : Shows the ability to take a 90 degrees turn
-4. [Continues Turning](https://youtu.be/BL7XuTzfbpo): Shows the ability to run on continues turn
+4. [Continuous Turning](https://youtu.be/BL7XuTzfbpo): Shows the ability to run on continuous turns
 5. [AEB TTC](https://youtu.be/xTRx6OV5bOY) : Shows the ability of having safety feature
 
 # Testing Strategies #
