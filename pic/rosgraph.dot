@@ -1,0 +1,60 @@
+digraph graphname {
+	graph [bb="0,0,1169.7,366.58",
+		compound=True,
+		rank=same,
+		rankdir=LR,
+		ranksep=0.2
+		margin=0,
+		pad=0,
+	];
+	node [label="\N"];
+	n___bridge	[URL=__bridge,
+		height=0.5,
+		label="/bridge",
+		pos="221.63,78.582",
+		shape=ellipse,
+		tooltip="/bridge",
+		width=1.2277];
+	n___safety_node_launch	[URL=__safety_node_launch,
+		height=0.5,
+		label="/safety_node_launch",
+		pos="1065.7,93.582",
+		shape=ellipse,
+		tooltip="/safety_node_launch",
+		width=2.8886];
+	n___bridge -> n___safety_node_launch	[URL=topic_3A__ego_racecar__odom,
+		label="/ego_racecar/odom",
+		lp="720,137.08",
+		penwidth=1,
+		pos="e,1013.8,109.27 263.45,72.572 311.2,67.831 390.42,67.352 443.26,105.58 450.03,110.48 444.29,117.98 451.26,122.58 469.46,134.59 741.72,130.03 846.74,127.58 894.33,126.47 906.67,129.75 953.74,122.58 970.21,120.07 987.76,116.11 1003.9,111.91"];
+	n___bridge -> n___safety_node_launch	[URL=topic_3A__scan,
+		label="/scan",
+		lp="720,101.08",
+		penwidth=1,
+		pos="e,961.93,94.725 265.92,80.1 368.29,83.598 633.28,92.112 854.74,94.582 886.23,94.933 920.39,94.934 951.82,94.78"];
+	n___wall_follow_node_launch	[URL=__wall_follow_node_launch,
+		height=0.5,
+		label="/wall_follow_node_launch",
+		pos="720,54.582",
+		shape=ellipse,
+		tooltip="/wall_follow_node_launch",
+		width=3.5205];
+	n___bridge -> n___wall_follow_node_launch	[URL=topic_3A__scan,
+		label="/scan",
+		lp="518.26,49.082",
+		penwidth=1,
+		pos="e,618.66,43.768 261.24,70.391 306.51,61.238 383.93,46.995 451.26,41.582 510.62,36.81 525.78,38.698 585.26,41.582 592.88,41.951 600.73,42.439 608.64,43.007"];
+
+	n___safety_node_launch -> n___bridge	[URL=topic_3A__drive,
+		label="/drive",
+		lp="720,20.082",
+		penwidth=1,
+		pos="e,257.73,67.967 1030.7,76.588 988.69,56.648 914.49,24.763 846.74,12.582 631.65,-26.087 370.49,36.351 267.49,65.201"];
+	n___wall_follow_node_launch -> n___safety_node_launch	[URL=topic_3A__drive_control,
+		label="/drive_control",
+		lp="904.24,87.082",
+		penwidth=1,
+		pos="e,981.72,82.941 823.01,65.127 863.7,69.441 910.95,74.586 953.74,79.582 959.55,80.26 965.52,80.973 971.55,81.702"];
+
+
+}
