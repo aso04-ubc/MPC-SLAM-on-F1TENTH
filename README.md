@@ -119,7 +119,7 @@ $$
 \Theta = -(y + L \cdot \sin(\alpha))
 $$
 
-where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta_d$
+where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta$
 
 Next, PID was implemented keeping track of the previous error and storing inside self.previous_error. Our PID control mainly consists of a proportional to adjust and arrive to a desired setpoint as well as a deravitive control used to smooth out the observed oscillation as we settle to a desired setpoint. The change in error over time is given with the formula
 
