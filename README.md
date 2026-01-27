@@ -9,8 +9,7 @@ The end-to-end data and command path is:
 3. **PID control**: `wall_follow/PID_control.py` consumes the filtered geometry to compute the steering command.
 4. **Command smoothing**: the steering command is filtered again via `kf_steering`.
 5. **Control submission**: a `DriveControlMessage` (priority + drive command) is published.
-6. **Drive control**: `drive_control_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive.
-7. **AEB override**: the safety node monitors `/scan` and `/ego_racecar/odom`; if TTC or distance thresholds are violated, it forces speed to zero by republishing the last command.
+6. **Safety**: `safety_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive. And set speed to 0 when it is active. For compatibility reasons this node is also referred as drive control in this project.
 
 ![Node Structure](pic/milestone_1_node_graph.png)
 
