@@ -18,7 +18,7 @@ The end-to-end data and command path is:
 
 1. Clone the repo to sim_ws/src folder.
 2. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
-3. Run `ros2 launch milestones milestone1_py.py`. All node should be online.
+3. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
 ## Data Processing ##
 
