@@ -3,7 +3,6 @@
 **Project:** Milestone 1 - Wall Following
 
 **Team Members:** Amir Tajaddoditalab, Augustin So, Fengwei Huang, Guanxu Zhou, Leo Liu, Yiran Wang
-Yiran Wang
 
 ---
 ##  Amir Tajaddoditalab
@@ -31,10 +30,16 @@ Yiran Wang
 
 ---
 ##  Fengwei Huang
-**Primary Focus:**
+**Primary Focus:** PID controller implementation
 
 ### Key Contributions
-* 
+* **Code implementations**
+  * Implemented the PID controller used by the wall following algorithm
+  * Defined the wall-following control error based on lateral distance and heading angle
+  * Structured the controller as a standalone module for integration with the wall-follow node
+* **Stability**
+  * Added basic safeguards to improve control stability and prevent unsafe steering behavior
+
 
 ---
 ## Guanxu Zhou
@@ -54,10 +59,12 @@ Yiran Wang
 
 ---
 ##  Leo Liu
-**Primary Focus:**
+**Primary Focus:** data processing, documentation
 
 ### Key Contributions
-* 
+* **Data Processing:** Discussed data processing algorithms and integration with PID control for implementation.
+* **Documentation:** Wrote README.md explaining detailed technical aspects such as data processing, Kalman filtering, safety, drive control, etc.
+* **Testing:** Stress tested the car under multiple scenarios for final verification.
 
 ---
 
