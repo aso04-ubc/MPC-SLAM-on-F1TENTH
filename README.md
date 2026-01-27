@@ -100,6 +100,7 @@ y = \mathrm{dist}_{\text{left}} - \mathrm{dist}_{\text{right}}
 $$
 
 We also calculated the average angle for steering to using the left and right tangent to get an accurate read on steering angle
+
 $$
 \Theta = \frac{\theta_L + \theta_R}{2}
 $$
