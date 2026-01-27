@@ -3,7 +3,6 @@
 **Project:** Milestone 1 - Wall Following
 
 **Team Members:** Amir Tajaddoditalab, Augustin So, Fengwei Huang, Guanxu Zhou, Leo Liu, Yiran Wang
-Yiran Wang
 
 ---
 ##  Amir Tajaddoditalab
@@ -54,10 +53,12 @@ Yiran Wang
 
 ---
 ##  Leo Liu
-**Primary Focus:**
+**Primary Focus:** data processing, documentation
 
 ### Key Contributions
-* 
+* **Data Processing:** Discussed data processing algorithms and integration with PID control for implementation.
+* **Documentation:** Wrote README.md explaining detailed technical aspects such as data processing, Kalman filtering, safety, drive control, etc.
+* **Testing:** Stress tested the car under multiple scenarios for final verification.
 
 ---
 
