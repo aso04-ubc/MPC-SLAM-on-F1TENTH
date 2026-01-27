@@ -101,11 +101,6 @@ class DataProcess(Node):
 
     def OnReceiveLaserInfo(self, lidar_data):
 
-        # to 40 Hz
-        if  time.time_ns() - self.last_time < 100000/40:
-            return
-        self.last_time = time.time_ns()
-
         # get basic info from the input data
         ranges = np.array(lidar_data.ranges)
         self.angle_increment = lidar_data.angle_increment
