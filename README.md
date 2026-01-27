@@ -1,4 +1,79 @@
-## Algorithm Explanation ##
+# Algorithm Explanation #
+
+## Data Processing ##
+
+### LiDAR Data ###
+
+The LiDAR scan was converted to a NumPy array and each beam angle was computed from the scan metadata:
+
+$$
+\theta_i = \theta_{\min} + i \cdot \Delta \theta
+$$
+
+Invalid readings were sanitized by replacing NaN and $\pm\infty$ with the sensor's minimum/maximum ranges. To keep computation bounded, the callback rate was capped at roughly 40 Hz.
+
+The scan was split into left and right sectors using the indices corresponding to $0$ and $\pm \frac{\pi}{2}$ radians. For each side, a local wall segment was extracted by finding the minimum range index and taking a fixed window of samples around it. Those samples were converted to Cartesian coordinates:
+
+$$
+x = r \cos(\theta), \quad y = r \sin(\theta)
+$$
+
+A line was fit with least squares to estimate the wall tangent:
+
+$$
+y = m x + c
+$$
+
+From this line, the perpendicular distance to the wall and the tangent angle were computed:
+
+$$
+d = \frac{|c|}{\sqrt{m^2 + 1}}, \quad \alpha = \tan^{-1}(m)
+$$
+
+If the fit was ill-conditioned or had too few points, the algorithm fell back to the nearest range value and a zero angle. Finally, the left/right distances and angles were smoothed with independent Kalman filters (see Kalman Filter section) before being passed to the controller.
+
+### Kalman Filter ###
+
+A simple 1D Kalman filter was used to smooth the estimated wall angles, distances, and steering command. The model assumes a constant state:
+
+$$
+x_k = x_{k-1}
+$$
+
+with measurement
+
+$$
+z_k = x_k + v_k
+$$
+
+and process noise. The predict step is
+
+$$
+\hat{x}_{k|k-1} = \hat{x}_{k-1}, \quad P_{k|k-1} = P_{k-1} + Q
+$$
+
+The update step uses the Kalman gain
+
+$$
+K_k = \frac{P_{k|k-1}}{P_{k|k-1} + R}
+$$
+
+to correct the state:
+
+$$
+\hat{x}_k = \hat{x}_{k|k-1} + K_k (z_k - \hat{x}_{k|k-1}), \quad
+P_k = (1 - K_k) P_{k|k-1}
+$$
+
+Larger $R$ increases smoothing by trusting measurements less, while larger $Q$ makes the filter respond faster. The filter is configured via ROS parameters:
+
+- `kalman_angle_R`, `kalman_angle_Q` for left/right wall tangent angles
+- `kalman_distance_R`, `kalman_distance_Q` for left/right wall distances
+- `kalman_steering_R`, `kalman_steering_Q` for the final steering command
+
+In the processing pipeline, raw LiDAR geometry estimates are filtered first (left/right angles and distances), then the PID controller runs on those filtered values. The resulting steering command is filtered again before being published.
+
+## PID Control ##
 
 The angle and distance difference were used between two lasers to find the orientation of the car relative to the wall. The formulae used were
 
@@ -34,4 +109,20 @@ due to noisy data coming from the LiDAR sensor, a low pass filter was applied to
 
 Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection after the car is in an error state.
 
-a drive control node was implemented for node priority ordering, giving maximum priority to emergency braking when it is activated.
+## Safety & Control ##
+
+The drive control (safety) node multiplexes drive commands using a priority queue and enforces Automatic Emergency Braking (AEB). Each controller publishes a `DriveControlMessage` with a priority; the node stores the latest message per priority and publishes the highest-priority command when AEB is not active.
+
+AEB is triggered from LiDAR and odometry. For each valid beam, the node computes range rate:
+
+$$
+\dot{r} = v \cos(\theta)
+$$
+
+and estimates time-to-collision:
+
+$$
+TTC = \frac{r}{\dot{r}}
+$$
+
+If the minimum TTC across beams falls below the threshold or the minimum range is below the distance threshold, AEB engages. While active, the node continuously republishes the most recent command with speed forced to zero. AEB can also be toggled manually via console commands (`aeb_on`/`aeb_off`).
