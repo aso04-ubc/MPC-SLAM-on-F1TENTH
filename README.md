@@ -99,10 +99,15 @@ $$
 y = \mathrm{dist}_{\text{left}} - \mathrm{dist}_{\text{right}}
 $$
 
+We also calculated the average angle for steering to using the left and right tangent to get an accurate read on steering angle
+$$
+\Theta = \frac{\theta_L + \theta_R}{2}
+$$
+
 The total error formula was given as follows
 
 $$
-\Theta_d = -(y + L \cdot \sin(\alpha))
+\Theta = -(y + L \cdot \sin(\alpha))
 $$
 
 where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta_d$
