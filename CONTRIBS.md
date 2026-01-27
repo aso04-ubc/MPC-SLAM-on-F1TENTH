@@ -31,18 +31,16 @@ Yiran Wang
 
 ---
 ##  Fengwei Huang
-**Primary Focus:** PID controller implementation and stability
+**Primary Focus:** PID controller implementation
 
 ### Key Contributions
-* **Code Implementation:**
-  * Implemented a standalone PID controller module used by the wall following system
-  * Implemented lookahead-based wall-following error formulation using lateral distance and heading angle
-  * Designed the controller as a pure control module decoupled from ROS publishers and topics
-* **Control Stability & Robustness:**
-  * Implemented safe time-step (`dt`) handling to avoid instability during startup or clock irregularities
-  * Added integral anti-windup by clamping the accumulated integral term
-  * Implemented derivative low-pass filtering to reduce noise sensitivity in LiDAR-based inputs
-  * Applied steering output saturation to ensure stable and physically safe control commands
+* **Code implementations**
+  * Implemented the PID controller used by the wall following algorithm
+  * Defined the wall-following control error based on lateral distance and heading angle
+  * Structured the controller as a standalone module for integration with the wall-follow node
+* **Stability**
+  * Added basic safeguards to improve control stability and prevent unsafe steering behavior
+
 
 ---
 ## Guanxu Zhou
