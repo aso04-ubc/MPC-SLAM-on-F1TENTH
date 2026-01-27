@@ -1,3 +1,8 @@
+// AppPCH.h
+// Common precompiled header for the drive_control_node.
+// Contains frequently used system and ROS2 includes to speed up compilation
+// and keep source files concise.
+
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
