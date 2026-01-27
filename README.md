@@ -1,3 +1,11 @@
+# How To Run ##
+
+1. Clone the repo to sim_ws/src folder.
+2. Source ros file
+3. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
+4. Source the install file by executing `source install/setup.bash`.
+5. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
+
 # Algorithm Explanation #
 
 ## Overview ##
@@ -13,12 +21,6 @@ The end-to-end data and command path is:
 7. **AEB override**: the safety node monitors `/scan` and `/ego_racecar/odom`; if TTC or distance thresholds are violated, it forces speed to zero by republishing the last command.
 
 ![Node Structure](pic/milestone_1_node_graph.png)
-
-## How To Run ##
-
-1. Clone the repo to sim_ws/src folder.
-2. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
-3. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
 ## Data Processing ##
 
