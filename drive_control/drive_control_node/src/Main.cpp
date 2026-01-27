@@ -1,7 +1,21 @@
 #include "Application.hpp"
+#include <vector>
+#include <string>
+#include <algorithm>
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
+
+    std::vector<std::string> non_ros_args_strings = rclcpp::remove_ros_arguments(argc, argv);
+
+    std::vector<char*> new_argv_vec;
+    for (const auto& arg : non_ros_args_strings) {
+        new_argv_vec.push_back(const_cast<char*>(arg.c_str()));
+    }
+    new_argv_vec.push_back(nullptr);
+
+    int new_argc = static_cast<int>(non_ros_args_strings.size());
+    char** new_argv = new_argv_vec.data();
 
     argparse::ArgumentParser parser("Drive Control Node");
 
@@ -16,7 +30,7 @@ int main(int argc, char** argv) {
           .scan<'g', double>();
 
     try {
-        parser.parse_args(argc, argv);
+        parser.parse_args(new_argc, new_argv);
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         std::cerr << parser.help().str() << std::endl;

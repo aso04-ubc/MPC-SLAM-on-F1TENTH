@@ -184,7 +184,7 @@ class DataProcess(Node):
         
         if DEBUG:
             dist_error = (left_dist - right_dist) / 2.0
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"L: d={left_dist:.2f} a={left_tangent:.2f} | "
                 f"R: d={right_dist:.2f} a={right_tangent:.2f} | "
                 f"err={dist_error:.2f} steer={pid_command:.3f}"
