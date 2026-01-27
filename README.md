@@ -133,7 +133,7 @@ Finally, integral was implemented by constantly adding the error in each frame o
 
 ## Speed Control ##
 
-To make sure our car perform safe while perform in high speed. We introduce multi level speed in our implementation.
+To make sure our car performs safely while operating at high speed, we introduced multi-level speed control in our implementation.
 
 We give a high speed while the car is not turning, while slow down when the car wants to perform a sharp turn. This allowed our car to be fast during straight line, and perform well during turnings.
 
