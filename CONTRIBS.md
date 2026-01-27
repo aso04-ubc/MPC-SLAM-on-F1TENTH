@@ -30,10 +30,16 @@
 
 ---
 ##  Fengwei Huang
-**Primary Focus:**
+**Primary Focus:** PID controller implementation
 
 ### Key Contributions
-* 
+* **Code implementations**
+  * Implemented the PID controller used by the wall following algorithm
+  * Defined the wall-following control error based on lateral distance and heading angle
+  * Structured the controller as a standalone module for integration with the wall-follow node
+* **Stability**
+  * Added basic safeguards to improve control stability and prevent unsafe steering behavior
+
 
 ---
 ## Guanxu Zhou
