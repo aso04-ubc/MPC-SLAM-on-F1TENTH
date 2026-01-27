@@ -13,10 +13,17 @@ Yiran Wang
 *
 ---
 ##  Augustin So
-**Primary Focus:**
+**Primary Focus:** distance and angle calculation relative to walls, LiDAR interface functions
 
 ### Key Contributions
-* 
+* **Code Implementation:**
+* Implemented error calculation from relative angle and distance
+* Attempted different wall following strategies to compare effectiveness
+* Tested a variety of parameters for k_p, k_d, k_i
+* Implemented proper usage of proportional, integral, derivative terms
+* **Testing:**
+* Performed testing on calculations using self.get_logger to verify angle and distance correctness during simulation
+* Tested a variety of starting setups to verify the response (overdamped, underdamped, critically damped)
 
 ---
 ##  Fengwei Huang
