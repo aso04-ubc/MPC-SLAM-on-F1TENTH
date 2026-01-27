@@ -6,7 +6,7 @@
 4. Source the install file by executing `source install/setup.bash`.
 5. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
-The scan are running at 250Hz. It it does not work well. Please try code on `40Hz_scan` branch.
+The scan are running at 250Hz. If it does not work well. Please try code on `40Hz_scan` branch.
 
 # Algorithm Explanation #
 
