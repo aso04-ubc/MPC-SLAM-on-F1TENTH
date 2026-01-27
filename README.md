@@ -6,7 +6,7 @@
 4. Source the install file by executing `source install/setup.bash`.
 5. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
-The scan are running at 250Hz. It it does not work well. Please try code on `40Hz_scan` branch.
+The scan are running at 250Hz. If it does not work well. Please try code on `40Hz_scan` branch.
 
 # Algorithm Explanation #
 
@@ -33,7 +33,7 @@ $$
 \theta_i = \theta_{\min} + i \cdot \Delta \theta
 $$
 
-Invalid readings were sanitized by replacing NaN and $\pm\infty$ with the sensor's minimum/maximum ranges. To keep computation bounded, the callback rate was capped at roughly 40 Hz.
+Invalid readings were sanitized by replacing NaN and $\pm\infty$ with the sensor's minimum/maximum ranges. To keep computation bounded, the callback rate was capped at 250Hz (40Hz on branch `40Hz_scan`).
 
 The scan was split into left and right sectors using the indices corresponding to $0$ and $\pm \frac{\pi}{2}$ radians. For each side, a local wall segment was extracted by finding the minimum range index and taking a fixed window of samples around it. Those samples were converted to Cartesian coordinates:
 
