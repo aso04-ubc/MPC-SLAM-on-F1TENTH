@@ -12,6 +12,14 @@ The end-to-end data and command path is:
 6. **Drive control**: `drive_control_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive.
 7. **AEB override**: the safety node monitors `/scan` and `/ego_racecar/odom`; if TTC or distance thresholds are violated, it forces speed to zero by republishing the last command.
 
+![Node Structure](pic/milestone_1_node_graph.png)
+
+## How To Run ##
+
+1. Clone the repo to sim_ws/src folder.
+2. Run `colcon build` to build all model. As we used c++ node in out implementation, first time to build might take loger.
+3. Run `ros2 launch milestones milestone1_py.py`. All node should be online.
+
 ## Data Processing ##
 
 ### LiDAR Data ###
@@ -123,6 +131,12 @@ due to noisy data coming from the LiDAR sensor, a low pass filter was applied to
 
 Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. However, we did not find integral control to be beneficial in our control loop so a very small gain was used.
 
+## Speed Control ##
+
+To make sure our car perform safe while perform in high speed. We introduce multi level speed in our implementation.
+
+We give a high speed while the car is not turning, while slow down when the car wants to perform a sharp turn. This allowed our car to be fast during straight line, and perform well during turnings.
+
 ## Safety & Drive Control ##
 
 The drive control (safety) node multiplexes drive commands using an ordered map keyed by priority and enforces Automatic Emergency Braking (AEB). Each controller publishes a `DriveControlMessage` with a priority and an `active` flag; the node stores the latest message per priority while active and publishes the highest-priority command when AEB is not active.
@@ -140,3 +154,61 @@ TTC = \frac{r}{\dot{r}}
 $$
 
 If the minimum TTC across beams falls below the TTC threshold or the minimum range is below the distance threshold, AEB engages. While active, the node continuously republishes the most recent command with speed forced to zero (looped every 5 ms). Thresholds are configured via CLI flags `--aeb-ttc-threshold` (default 0.3 s) and `--aeb-minimum-distance` (default 0.5 m). AEB can also be toggled manually via console commands (`aeb_on`/`aeb_off`).
+
+## Videos of Our Algorithm ##
+
+1. [Overview](https://youtu.be/etvGP7EX9d0) : Shows how car run in Spielberg map
+2. [Shape Turn](https://youtu.be/IwhlQQPrbYY) : Shows the ability to take a sharp turn
+3. [90 Degree Turn]( https://youtu.be/qFoOQlBKXjI) : Shows the ability to take a 90 degrees turn
+4. [Continues Turning](https://youtu.be/BL7XuTzfbpo): Shows the ability to run on continues turn
+5. [AEB TTC](https://youtu.be/xTRx6OV5bOY) : Shows the ability of having safety feature
+
+# Testing Strategies #
+
+## Overview ##
+
+To ensure a safe implementation that strictly avoids collisions, a bottom-up testing approach was adopted. This methodology prioritized the independent verification of critical safety components before full system integration. The testing pipeline consisted of three stages:
+
+1. **Modular Verification**: Isolated testing of the `safety_node` and `wall_follow_node`.
+2. **System Integration**: Full-scale stress testing in the simulation environment.
+3. **Edge Case Validation**: Targeted scenarios to test system recovery and boundary conditions.
+
+## Modular Testing ##
+
+The system was decoupled to test and tune the safety and control modules independently, ensuring that failures could be isolated effectively.
+
+### Safety Node Verification ###
+
+The Automatic Emergency Braking (AEB) logic was verified through isolated collision tests. The vehicle was manually driven towards obstacles at varying velocity profiles to ensure the `safety_node` could intervene reliably.
+
+* **TTC Tuning**: The Time to Collision (TTC) threshold was adjusted to ensure the car halted before impact without triggering false positives during aggressive maneuvering.
+* **Minimum Distance**: A hard distance constraint was tuned to act as a failsafe for low-speed approaches.
+
+### Wall Following Node Tuning ###
+
+The control logic was tuned using a dedicated debug publisher that outputted internal control states (error terms, steering angles, and filtered LiDAR data).
+
+* **Visualization**: PlotJuggler was utilized to visualize cross-track error and steering commands in real-time. This allowed for data-driven tuning of PID gains ($K_p, K_d, K_i$) and the evaluation of LiDAR filtering latency.
+* **Algorithm Refinement**: The wall identification algorithm was stress-tested against noisy sensor data to ensure the estimated tangent angle remained stable during cornering.
+
+## Integration & Robustness ##
+
+Following modular verification, the components were integrated for full-scale reliability testing.
+
+### Long-Duration Stress Test ###
+
+The vehicle was deployed in the simulation for extended durations in both **clockwise** and **counter-clockwise** directions. The objective was to verify that the `safety_node` remained dormant during normal wall-following operation and only intervened when genuine collision risks were artificially introduced.
+
+### Edge Case Validation ###
+
+Specific scenarios were designed to test the controller's limits:
+
+* **Acute Angle Recovery**: The vehicle was manually positioned at extreme angles relative to the wall to verify that the PID controller could recover a safe trajectory without overshooting into the opposite wall.
+* **Zero-Velocity Initialization**: The vehicle was initialized from a standstill directly facing a wall to ensure the logic handled "immediate obstacle" scenarios safely without startup instabilities.
+
+## Future Improvements ##
+
+To further refine the testing methodology for future milestones, the following improvements are planned:
+
+1. **Automated Regression Testing**: Implementation of scripts to automatically reset the simulation and run the vehicle for fixed durations ($N$ laps), logging collision events programmatically to eliminate observer bias.
+2. **Multi-Environment Validation**: Extending the test suite to include different maps (e.g., Levine Hall, Spielberg) to ensure the wall-following logic generalizes to varying track geometries and corridor widths, rather than being overfitted to a single environment.
