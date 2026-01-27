@@ -113,7 +113,7 @@ $$
 
 where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta_d$
 
-Next, PID was implemented keeping track of the previous error and storing inside self.previous_error. The change in error over time is given with the formula
+Next, PID was implemented keeping track of the previous error and storing inside self.previous_error. Our PID control mainly consists of a proportional to adjust and arrive to a desired setpoint as well as a deravitive control used to smooth out the observed oscillation as we settle to a desired setpoint. The change in error over time is given with the formula
 
 $$
 \frac{de(t)}{dt} = \frac{e(t) - e(t-\Delta t)}{\Delta t}
@@ -121,7 +121,7 @@ $$
 
 due to noisy data coming from the LiDAR sensor, a low pass filter was applied to the signal to smooth out the data and prevent jitter during driving caused by the derivative term.
 
-Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection after the car is in an error state.
+Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. However, we did not find integral control to be beneficial in our control loop so a very small gain was used.
 
 ## Safety & Drive Control ##
 
