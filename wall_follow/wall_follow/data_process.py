@@ -28,19 +28,19 @@ class DataProcess(Node):
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
-        self.declare_parameter('kalman_angle_R', 300.0)
+        self.declare_parameter('kalman_angle_R', 50.0)
         self.declare_parameter('kalman_angle_Q', 0.1)
         kalman_angle_R = self.get_parameter('kalman_angle_R').get_parameter_value().double_value
         kalman_angle_Q = self.get_parameter('kalman_angle_Q').get_parameter_value().double_value
 
         # Distance filters
-        self.declare_parameter('kalman_distance_R', 100.0)
+        self.declare_parameter('kalman_distance_R', 10.0)
         self.declare_parameter('kalman_distance_Q', 0.1)
         kalman_distance_R = self.get_parameter('kalman_distance_R').get_parameter_value().double_value
         kalman_distance_Q = self.get_parameter('kalman_distance_Q').get_parameter_value().double_value
 
         # steering filters
-        self.declare_parameter('kalman_steering_R', 10.0)
+        self.declare_parameter('kalman_steering_R', 2)
         self.declare_parameter('kalman_steering_Q', 0.1)
         kalman_steering_R = self.get_parameter('kalman_steering_R').get_parameter_value().double_value
         kalman_steering_Q = self.get_parameter('kalman_steering_Q').get_parameter_value().double_value
@@ -102,7 +102,7 @@ class DataProcess(Node):
     def OnReceiveLaserInfo(self, lidar_data):
 
         # to 40 Hz
-        if  time.time_ns() - self.last_time < 100000/40:
+        if  time.time_ns() - self.last_time < 1_000_000_000/40:
             return
         self.last_time = time.time_ns()
 
