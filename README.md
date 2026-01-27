@@ -157,7 +157,7 @@ If the minimum TTC across beams falls below the TTC threshold or the minimum ran
 
 ## Videos of Our Algorithm ##
 
-1. [Overview](https://youtu.be/etvGP7EX9d0) : Shows how car run in Spielberg map
+1. [Overview](https://youtu.be/etvGP7EX9d0) : Shows how car runs in Spielberg map
 2. [Sharp Turn](https://youtu.be/IwhlQQPrbYY) : Shows the ability to take a sharp turn
 3. [90 Degree Turn]( https://youtu.be/qFoOQlBKXjI) : Shows the ability to take a 90 degrees turn
 4. [Continuous Turning](https://youtu.be/BL7XuTzfbpo): Shows the ability to run on continuous turns
