@@ -62,8 +62,11 @@ Yiran Wang
 ---
 
 ##  Yiran Wang
-**Primary Focus:**
+**Primary Focus:** safety node architecture, custom interfaces, integration & performance
 
 ### Key Contributions
-* 
+* **Safety node architecture:** Implemented a multithreaded, native high‑performance, low‑latency safety node for real‑time decisioning.
+* **Custom interfaces & topics:** Defined custom message types and topics, integrated message prioritization and forwarding into the safety node.
+* **System integration:** Wired the safety node into other components and validated end‑to‑end data flow.
+* **Build/test & tuning:** Managed multi‑package workflows, supported testing and builds, and tuned parameters for safety and stable performance.
 
