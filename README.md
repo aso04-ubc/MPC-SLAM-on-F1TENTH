@@ -111,18 +111,30 @@ Finally, integral was implemented by constantly adding the error in each frame o
 
 ## Safety & Control ##
 
-The drive control (safety) node multiplexes drive commands using a priority queue and enforces Automatic Emergency Braking (AEB). Each controller publishes a `DriveControlMessage` with a priority; the node stores the latest message per priority and publishes the highest-priority command when AEB is not active.
+The drive control (safety) node multiplexes drive commands using an ordered map keyed by priority and enforces Automatic Emergency Braking (AEB). Each controller publishes a `DriveControlMessage` with a priority and an `active` flag; the node stores the latest message per priority while active and publishes the highest-priority command when AEB is not active.
 
-AEB is triggered from LiDAR and odometry. For each valid beam, the node computes range rate:
+AEB is triggered from LiDAR and odometry. For each valid beam (finite and within the scan range), the node computes range rate:
 
 $$
 \dot{r} = v \cos(\theta)
 $$
 
-and estimates time-to-collision:
+and estimates time-to-collision for approaching beams ($\dot{r} > 0$):
 
 $$
 TTC = \frac{r}{\dot{r}}
 $$
 
-If the minimum TTC across beams falls below the threshold or the minimum range is below the distance threshold, AEB engages. While active, the node continuously republishes the most recent command with speed forced to zero. AEB can also be toggled manually via console commands (`aeb_on`/`aeb_off`).
+If the minimum TTC across beams falls below the TTC threshold or the minimum range is below the distance threshold, AEB engages. While active, the node continuously republishes the most recent command with speed forced to zero (looped every 5 ms). Thresholds are configured via CLI flags `--aeb-ttc-threshold` (default 0.3 s) and `--aeb-minimum-distance` (default 0.5 m). AEB can also be toggled manually via console commands (`aeb_on`/`aeb_off`).
+
+## Control Flow ##
+
+The end-to-end data and command path is:
+
+1. **LiDAR input**: `wall_follow/data_process.py` subscribes to `/scan`, sanitizes ranges, and estimates left/right wall distance and tangent angle.
+2. **Geometry smoothing**: left/right angles and distances are each smoothed with a 1D Kalman filter.
+3. **PID control**: `wall_follow/PID_control.py` consumes the filtered geometry to compute the steering command.
+4. **Command smoothing**: the steering command is filtered again via `kf_steering`.
+5. **Control submission**: a `DriveControlMessage` (priority + drive command) is published.
+6. **Safety arbitration**: `drive_control_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive.
+7. **AEB override**: the safety node monitors `/scan` and `/ego_racecar/odom`; if TTC or distance thresholds are violated, it forces speed to zero by republishing the last command.
