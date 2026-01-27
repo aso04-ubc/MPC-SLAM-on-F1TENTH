@@ -48,12 +48,12 @@ FetchContent_MakeAvailable(argparse)
 SET(DRIVE_CONTROL_NODE_NAME safety_node)
 
 add_executable(${DRIVE_CONTROL_NODE_NAME}
-        drive_control_node/src/Main.cpp
-        drive_control_node/src/Application.hpp
-        drive_control_node/src/NodeImpl.cpp
-        drive_control_node/src/AppPCH.h
-        drive_control_node/src/ExecutionContext.hpp
-        drive_control_node/src/ExecutionContext.cpp)
+        safety_node/src/Main.cpp
+        safety_node/src/Application.hpp
+        safety_node/src/NodeImpl.cpp
+        safety_node/src/AppPCH.h
+        safety_node/src/ExecutionContext.hpp
+        safety_node/src/ExecutionContext.cpp)
 
 ament_target_dependencies(
         ${DRIVE_CONTROL_NODE_NAME}
@@ -75,7 +75,7 @@ target_link_libraries(
 target_precompile_headers(
         ${DRIVE_CONTROL_NODE_NAME}
         PRIVATE
-        drive_control_node/src/AppPCH.h
+        safety_node/src/AppPCH.h
 )
 
 target_compile_options(${DRIVE_CONTROL_NODE_NAME}

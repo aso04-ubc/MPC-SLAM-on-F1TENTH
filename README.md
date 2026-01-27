@@ -1,3 +1,13 @@
+# How To Run ##
+
+1. Clone the repo to sim_ws/src folder.
+2. Source ros file
+3. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
+4. Source the install file by executing `source install/setup.bash`.
+5. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
+
+The scan are running at 250Hz. It it does not work well. Please try code on `40Hz_scan` branch.
+
 # Algorithm Explanation #
 
 ## Overview ##
@@ -9,16 +19,9 @@ The end-to-end data and command path is:
 3. **PID control**: `wall_follow/PID_control.py` consumes the filtered geometry to compute the steering command.
 4. **Command smoothing**: the steering command is filtered again via `kf_steering`.
 5. **Control submission**: a `DriveControlMessage` (priority + drive command) is published.
-6. **Drive control**: `drive_control_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive.
-7. **AEB override**: the safety node monitors `/scan` and `/ego_racecar/odom`; if TTC or distance thresholds are violated, it forces speed to zero by republishing the last command.
+6. **Safety**: `safety_node` keeps the latest message per priority in an ordered map and publishes the highest-priority command when AEB is inactive. And set speed to 0 when it is active. For compatibility reasons this node is also referred as drive control in this project.
 
 ![Node Structure](pic/milestone_1_node_graph.png)
-
-## How To Run ##
-
-1. Clone the repo to sim_ws/src folder.
-2. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
-3. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
 ## Data Processing ##
 
@@ -119,7 +122,7 @@ $$
 \Theta = -(y + L \cdot \sin(\alpha))
 $$
 
-where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta_d$
+where L is a chosen distance in front of the car. We selected 1.5m. The steering angle is set to $\Theta$
 
 Next, PID was implemented keeping track of the previous error and storing inside self.previous_error. Our PID control mainly consists of a proportional to adjust and arrive to a desired setpoint as well as a deravitive control used to smooth out the observed oscillation as we settle to a desired setpoint. The change in error over time is given with the formula
 
@@ -129,7 +132,7 @@ $$
 
 due to noisy data coming from the LiDAR sensor, a low pass filter was applied to the signal to smooth out the data and prevent jitter during driving caused by the derivative term.
 
-Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. However, we did not find integral control to be beneficial in our control loop so a very small gain was used.
+Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. The integral term was very beneficial to settle to the setpoint quickly during straight lines after a corner.
 
 ## Speed Control ##
 
