@@ -131,7 +131,7 @@ $$
 
 due to noisy data coming from the LiDAR sensor, a low pass filter was applied to the signal to smooth out the data and prevent jitter during driving caused by the derivative term.
 
-Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. However, we did not find integral control to be beneficial in our control loop so a very small gain was used.
+Finally, integral was implemented by constantly adding the error in each frame over time to self.integral. self.integral is capped at a maximum and minimum of +/- 1.0 to prevent overcorrection/integral windup after the car is in an error state. The integral term was very beneficial to settle to the setpoint quickly during straight lines after a corner.
 
 ## Speed Control ##
 
