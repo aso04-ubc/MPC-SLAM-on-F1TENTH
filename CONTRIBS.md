@@ -7,10 +7,14 @@ Yiran Wang
 
 ---
 ##  Amir Tajaddoditalab
-**Primary Focus:**
+**Primary Focus:** PID Controller and tuning
 
 ### Key Contributions
-*
+* **Code implementations**
+* Helped bringup PID controller library to be used by the wall following algorithm
+* Tested varying factors such as different controller gains in order to achieve a fast step response
+* Stress tested the car under different conditions such as starting the car at a positional angle to ensure the PID controller and adjust steering angle to achieve the desired path
+
 ---
 ##  Augustin So
 **Primary Focus:** distance and angle calculation relative to walls, LiDAR interface functions
