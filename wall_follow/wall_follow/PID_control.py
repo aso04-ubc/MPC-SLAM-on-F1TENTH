@@ -40,7 +40,8 @@ class PIDControl:
         steering_limit: float = 0.7,
         integral_limit: float = 1.0,
         d_filter_alpha: float = 0,      # alpha -> closer to 1 = smoother D
-        target_dist: float = 1.0        # target distance from left wall (m)
+        target_dist: float = 1.0,       # target distance from wall (m)
+        wall_weight: float = 0.5        # 1.0 = left wall only, 0.0 = right wall only, 0.5 = equal weight
     ):
         # PID gains for distance error
         self.kp = kp
@@ -53,8 +54,11 @@ class PIDControl:
         # Lookahead distance for combining heading into distance error
         self.L = lookahead_L
         
-        # Target distance from left wall
+        # Target distance from wall
         self.target_dist = target_dist
+        
+        # Wall weight: 1.0 = left wall only, 0.0 = right wall only
+        self.wall_weight = wall_weight
 
         # Output and state limits
         self.steering_limit = abs(steering_limit)
@@ -115,20 +119,21 @@ class PIDControl:
         float
             Steering command (rad). Positive = steer left, Negative = steer right.
         """
-        # Note: right_angle and right_dist are kept in the API for compatibility
-        # but are not used in left-wall-only following mode
-        _ = right_angle, right_dist
+        # Wall weight blending: 1.0 = left wall only, 0.0 = right wall only
+        w_left = self.wall_weight
+        w_right = 1.0 - self.wall_weight
         
-        # Distance Error (left wall only)
-        # Positive error means car is too far from left wall -> need to steer left (positive steering)
-        # Negative error means car is too close to left wall -> need to steer right (negative steering)
-        dist_error = self.target_dist - left_dist
+        # Distance Error (weighted blend of left and right walls)
+        # Left wall: positive error means car is too far from left wall -> steer left
+        # Right wall: positive error means car is too close to right wall -> steer left
+        left_dist_error = self.target_dist - left_dist
+        right_dist_error = right_dist - self.target_dist
+        dist_error = w_left * left_dist_error + w_right * right_dist_error
         
-        # Heading Error (left wall only)
-        # Uses left wall angle to determine heading relative to the wall
-        # Positive angle means car is angled away from wall
-        # Negative angle means car is angled toward wall
-        heading_error = left_angle
+        # Heading Error (weighted blend of left and right walls)
+        # Left wall angle: positive means angled away from left wall
+        # Right wall angle: negative of right angle to have consistent sign convention
+        heading_error = w_left * left_angle - w_right * right_angle
         
         # Combined Error with Lookahead
         # Project where the car will be based on heading error
