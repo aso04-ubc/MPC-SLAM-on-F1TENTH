@@ -3,7 +3,7 @@
 1. Clone the repo to sim_ws/src folder.
 2. Source ros file
 3. Run `colcon build` to build all models. As we used c++ node in our implementation, first time to build might take longer.
-4. Source the install file by executing `source install/setup.bash`.
+4. Source the install files by executing `source setup.bash`.
 5. Run `ros2 launch milestones milestone1_py.py`. All nodes should be online.
 
 The scan are running at 250Hz. If it does not work well. Please try code on `40Hz_scan` branch.
