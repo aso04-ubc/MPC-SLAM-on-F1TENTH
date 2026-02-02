@@ -18,12 +18,55 @@ class GapFollowing(Node):
         self.current_velocity = 0.0
 
         self.minimum_distance = 3.0
+        self.minimum_gap_width = 5.0
 
     def odom_callback(self, msg):
         self.current_velocity = msg.twist.twist.linear.x
 
+    """
+    Gap Following
+        - look for distances greater than self.minimum distance to find gaps
+        - calculate the width of the gap and follow the widest
+        - use np.diff to quickly find where a gap appears
+        - use PID to steer the car towards the center of the gap
+    """
     def scan_callback(self, msg):
-        pass
+
+        largest_gap_start, largest_gap_end = self.find_largest_gap(msg)
+
+    """
+    Gap finding
+    
+    uses the data in ranges[] to look for gaps and returns the start and end index of the largest gap
+        
+        Arguments
+            - @msg: contains the range data for the lidar
+        Returns
+            - the start and end indices of the largest gap
+    """
+    def find_largest_gap(self, msg):
+
+        range_np = np.array(msg.ranges)
+        gaps = range_np > self.minimum_distance
+
+        gaps_padded = np.concatenate([0], gaps.astype(int), [0])
+        gaps_marked = np.diff(gaps_padded)
+
+        gap_starts = np.where(gaps_marked == 1)
+        gap_ends = np.where(gaps_marked == -1)
+
+        gap_widths = gap_ends - gap_starts
+
+        usable_gaps = gap_widths > self.minimum_gap_width
+
+        if usable_gaps.any():
+            widest = np.argmax(usable_gaps * gap_widths)
+            widest_start = gap_starts[widest]
+            widest_end = gap_ends[widest]
+
+        return widest_start, widest_end
+
+
 
 def main(args=None):
     rclpy.init(args=args)
