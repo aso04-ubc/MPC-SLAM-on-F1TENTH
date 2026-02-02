@@ -1,259 +1,234 @@
 import time
+import numpy as np
 
-from docutils.nodes import target
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float64
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from dev_b7_interfaces.msg import DriveControlMessage
 
-import numpy as np
-
 from wall_follow.config import DEBUG
 from wall_follow.KalmanFilter import SimpleKalmanFilter
 from wall_follow.PID_control import PIDControl
 
-class DataProcess(Node):
 
-    PID_control : PIDControl
+class DataProcess(Node):
+    """Left wall follow node using dual-beam measurement and PID control."""
+
+    # Two beam angles for dual-beam measurement (relative to the vehicle's left 90-degree direction)
+    BEAM_ANGLE_A = np.deg2rad(45)   # front-left 45 degrees
+    BEAM_ANGLE_B = np.deg2rad(90)   # pure left 90 degrees
+
+    # Speed and steering relationship
+    SPEED = 1.0      # forward speed
+    
 
     def __init__(self):
-        self.start_time = time.time()
-
         super().__init__("wall_follow")
-
-        self.window_size = 50
-        # steering angle and its speed
-        self.steering_speed_relation = {0.3 : 0.7, 0.03 : 0.7, -1 : 0.7}
-
-        # Kalman filter parameters (configurable via ROS parameters)
-        # Angle filters
-        self.declare_parameter('kalman_angle_R', 0.1)
-        self.declare_parameter('kalman_angle_Q', 0.1)
-        kalman_angle_R = self.get_parameter('kalman_angle_R').get_parameter_value().double_value
-        kalman_angle_Q = self.get_parameter('kalman_angle_Q').get_parameter_value().double_value
-
-        # Distance filters
-        self.declare_parameter('kalman_distance_R', 0.1)
-        self.declare_parameter('kalman_distance_Q', 0.1)
-        kalman_distance_R = self.get_parameter('kalman_distance_R').get_parameter_value().double_value
-        kalman_distance_Q = self.get_parameter('kalman_distance_Q').get_parameter_value().double_value
-
-        # steering filters
-        self.declare_parameter('kalman_steering_R', 0.1)
-        self.declare_parameter('kalman_steering_Q', 0.1)
-        kalman_steering_R = self.get_parameter('kalman_steering_R').get_parameter_value().double_value
-        kalman_steering_Q = self.get_parameter('kalman_steering_Q').get_parameter_value().double_value
-
-        self.kf_left_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
-        self.kf_right_angle = SimpleKalmanFilter(kalman_angle_R, kalman_angle_Q)
-        self.kf_left_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
-        self.kf_right_dist = SimpleKalmanFilter(kalman_distance_R, kalman_distance_Q)
-        self.kf_steering = SimpleKalmanFilter(kalman_steering_R, kalman_steering_Q)
-        
-        # set up PID controller
-        self.PID_control = PIDControl()
-
+        self.start_time = time.time()
         self.last_time = 0
+        
+        # Target follow distance
+        self.declare_parameter('target_distance', 0.5)
+        self.target_distance = self.get_parameter('target_distance').get_parameter_value().double_value
 
-        # make sure to get most recent messages
+        # Kalman filter parameters
+        self.declare_parameter('kalman_R', 5.0)    # measurement noise
+        self.declare_parameter('kalman_Q', 0.5)    # process noise
+        kalman_R = self.get_parameter('kalman_R').get_parameter_value().double_value
+        kalman_Q = self.get_parameter('kalman_Q').get_parameter_value().double_value
+
+        # Initialize Kalman filters
+        self.kf_distance = SimpleKalmanFilter(kalman_R, kalman_Q)
+        self.kf_angle = SimpleKalmanFilter(kalman_R, kalman_Q)
+        self.kf_control = SimpleKalmanFilter(0.1, 0.5)
+        
+        # PID controller
+        self.pid_controller = PIDControl(
+            kp=0.6,
+            ki=0.0,
+            kd=0.2,
+            lookahead_L=0.05,
+            steering_limit=0.6,
+            d_filter_alpha = 0.2
+        )
+
+        # QoS configuration
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        
+        # Subscribe to LaserScan data
         self.laser_receiver = self.create_subscription(
-            LaserScan,
-            "scan",
-            self.OnReceiveLaserInfo,
-            sensor_qos
+            LaserScan, "scan", self.on_scan_received, sensor_qos
         )
 
-        self.control_info_pusher = self.create_publisher(
+        # Publish control commands
+        self.control_publisher = self.create_publisher(
             DriveControlMessage,
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
             10
         )
 
-        self.get_logger().info("Data Process Node Initialized.")
+        self.get_logger().info(f"Wall Follow Node initialized. Target distance: {self.target_distance}m")
+        
+        # Debug topics
         if DEBUG:
-            self.get_logger().info("Debug mode is ON.")
-            self.pub_debug_left_dist   = self.create_publisher(Float64, "debug/left_dist", 10)
-            self.pub_debug_left_angle  = self.create_publisher(Float64, "debug/left_angle", 10)
-            self.pub_debug_right_dist  = self.create_publisher(Float64, "debug/right_dist", 10)
-            self.pub_debug_right_angle = self.create_publisher(Float64, "debug/right_angle", 10)
-            self.pub_debug_dip_steering = self.create_publisher(Float64, "debug/dip_steering", 10)
+            self.pub_debug_distance = self.create_publisher(Float64, "debug/left_dist", 10)
+            self.pub_debug_angle = self.create_publisher(Float64, "debug/left_angle", 10)
+            self.pub_debug_steering = self.create_publisher(Float64, "debug/steering", 10)
             self.pub_debug_speed = self.create_publisher(Float64, "debug/speed", 10)
 
 
 
 
 
-    def OnReceiveLaserInfo(self, lidar_data):
-
-        # to 40 Hz
-        if  time.time_ns() - self.last_time < 1_000_000_000/40:
+    def on_scan_received(self, scan: LaserScan):
+        """Process LaserScan data and perform left wall following."""
+        
+        # 40Hz frequency limit
+        current_time = time.time_ns()
+        if current_time - self.last_time < 25_000_000:  # 25ms = 40Hz
             return
-        self.last_time = time.time_ns()
+        self.last_time = current_time
 
-        # get basic info from the input data
-        ranges = np.array(lidar_data.ranges)
-        self.angle_increment = lidar_data.angle_increment
-        self.angle_min = lidar_data.angle_min
-        self.angle_max = lidar_data.angle_max
+        # Use dual-beam method to compute left wall distance and angle
+        distance, angle = self.dual_beam_measurement(scan)
         
-        all_angles = self.angle_min + np.arange(len(ranges)) * self.angle_increment
-        
-        # filter out invalid data
-        ranges = np.nan_to_num(ranges, 
-                               nan=lidar_data.range_min, 
-                               posinf=lidar_data.range_max, 
-                               neginf=lidar_data.range_min)
+        if distance is None:
+            return
 
-        # get vectors on each side
-        idx_middle_l = self.get_target_index(0)
-        idx_middle_r = self.get_target_index(0)
-        idx_leftmost = self.get_target_index((np.pi / 2) )
-        idx_rightmost = self.get_target_index((-np.pi / 2))
+        # Kalman filter smoothing
+        distance = self.kf_distance.update(distance)
+        angle = self.kf_angle.update(angle)
 
-        # get oriented distances and angles
-        left_dist, left_tangent = self.process_lidar_one_side(
-            ranges[idx_middle_l : idx_leftmost],
-            all_angles[idx_middle_l : idx_leftmost]
-        )
-        left_dist = max(left_dist, min(ranges[idx_middle_l:idx_leftmost]))
+        # Compute distance error
+        distance_error = distance - self.target_distance
 
-        right_dist, right_tangent = self.process_lidar_one_side(
-            ranges[idx_rightmost : idx_middle_r],
-            all_angles[idx_rightmost : idx_middle_r]
-        )
-        right_dist = max(right_dist, min(ranges[idx_rightmost:idx_middle_r]))
+        # PID control
+        steering = self.pid_controller.run(self, angle, distance_error)
 
-        # Apply Kalman Filter to smooth the results
-        left_tangent = self.kf_left_angle.update(left_tangent)
-        left_dist = self.kf_left_dist.update(left_dist)
-        right_tangent = self.kf_right_angle.update(right_tangent)
-        right_dist = self.kf_right_dist.update(right_dist)
-
-        # Run PID controller with both walls data
-        # The controller will keep the car centered between walls
-        pid_command = self.PID_control.run(
-            self,
-            left_tangent, left_dist,
-            right_tangent, right_dist
-        )
+        # Deadband processing
+        if abs(steering) < 0.02:
+            steering = 0.0
 
 
-        if abs(pid_command) < list(self.steering_speed_relation)[-2]:
-            pid_command = 0.0
+        speed = self.SPEED
 
-        pid_command = self.kf_steering.update(pid_command)
+        steering = self.kf_control.update(steering)
 
-        abs_steering = abs(pid_command)
+        # Publish drive command
+        self.publish_drive_command(steering, speed)
 
-        target_speed = 0
-        for angle, speed in self.steering_speed_relation.items():
-            if angle == -1:
-                target_speed = speed
-                break
-            if abs_steering > angle:
-                target_speed = speed
-                break
-
-
-        temp_msg = AckermannDriveStamped()
-        temp_msg.drive = AckermannDrive()
-        if time.time() - self.start_time < 1.0:
-            pid_command = 0.0
-        temp_msg.drive.steering_angle = pid_command
-        temp_msg.drive.speed = target_speed
-
-        full_msg = DriveControlMessage()
-        full_msg.active = True
-        full_msg.priority = 1000 # Subject to change
-        full_msg.drive = temp_msg
-
-        self.control_info_pusher.publish(full_msg)
-        
+        # Debug output
         if DEBUG:
-            dist_error = (left_dist - right_dist) / 2.0
-            self.get_logger().debug(
-                f"L: d={left_dist:.2f} a={left_tangent:.2f} | "
-                f"R: d={right_dist:.2f} a={right_tangent:.2f} | "
-                f"err={dist_error:.2f} steer={pid_command:.3f}"
-            )
+            self.publish_debug_info(distance, angle, steering, speed)
 
+    def dual_beam_measurement(self, scan: LaserScan):
+        """
+        Dual-beam measurement: use two laser beams to compute the perpendicular distance
+        to the left wall and the angle of the vehicle relative to the wall.
 
-        if DEBUG:
-            msg_ld = Float64(); msg_ld.data = float(left_dist)
-            msg_la = Float64(); msg_la.data = float(left_tangent)
-            msg_rd = Float64(); msg_rd.data = float(right_dist)
-            msg_ra = Float64(); msg_ra.data = float(right_tangent)
-            msg_sd = Float64(); msg_sd.data = float(pid_command)
-            msg_sp = Float64(); msg_sp.data = float(target_speed)
-            
+        Beam A: front-left 45 degrees (BEAM_ANGLE_A)
+        Beam B: pure left 90 degrees (BEAM_ANGLE_B)
 
-            self.pub_debug_left_dist.publish(msg_ld)
-            self.pub_debug_left_angle.publish(msg_la)
-            self.pub_debug_right_dist.publish(msg_rd)
-            self.pub_debug_right_angle.publish(msg_ra)
-            self.pub_debug_dip_steering.publish(msg_sd)
-            self.pub_debug_speed.publish(msg_sp)
-            # self.get_logger().info(f"Left dist: {left_dist:.2f}, angle: {left_tangent:.2f} | Right dist: {right_dist:.2f}, angle: {right_tangent:.2f}")
+        Returns:
+            (distance, alpha): perpendicular distance to the wall and the vehicle-wall angle
+        """
+        ranges = np.array(scan.ranges)
         
-
-    def process_lidar_one_side(self, local_ranges, local_angles):
-
-        # Find the index of the minimum distance, which should be close to the wall
-        min_idx = np.argmin(local_ranges)
-
-        start_idx = max(0, min_idx - self.window_size)
-        end_idx = min(len(local_ranges) - 1, min_idx + self.window_size)
-
-        # Get the angle and distance data for fitting
-        fit_ranges = local_ranges[start_idx:end_idx]
-        fit_angles = local_angles[start_idx:end_idx] 
-
-        # Get x and y coordinates
-        x = fit_ranges * np.cos(fit_angles)
-        y = fit_ranges * np.sin(fit_angles)
-
-        if len(x) < 3:
-            return fit_ranges[0], 0.0
-
-        # Perform linear regression (least squares) to find the line parameters
-        A_matrix = np.vstack([x, np.ones(len(x))]).T
-
-        coeffs, residuals, rank, s = np.linalg.lstsq(A_matrix, y, rcond=None)
-
-        # If the matrix is rank-deficient, the fit is unreliable; fall back to a safe default
-        if rank < A_matrix.shape[1]:
-            return fit_ranges[0], 0.0
+        # Get indices for the two beams
+        idx_a = self.angle_to_index(scan, self.BEAM_ANGLE_A)
+        idx_b = self.angle_to_index(scan, self.BEAM_ANGLE_B)
         
-        m, c = coeffs
-
-        # Calculate the distance from the origin to the line (Ax + By + C = 0)
-        denom = np.sqrt(m**2 + 1.0)
-
-        if not np.isfinite(m) or not np.isfinite(c) or denom == 0.0 or not np.isfinite(denom):
-            return fit_ranges[0], 0.0
+        if idx_a is None or idx_b is None:
+            return None, None
         
-        dist = abs(c) / denom
-
-        tangent_angle = np.arctan(m)
-
-        # make sure does not measure the distance to "fake line"
-        return dist, tangent_angle
-
-    def get_target_index(self,  target_angle : float):
-        raw_index = (target_angle - self.angle_min) / self.angle_increment
-        target_index = int(np.clip(raw_index, 0, (self.angle_max - self.angle_min) / self.angle_increment - 1))
-        return target_index
+        # Get ranges for the two beams, use a local window median filter
+        window = 3
+        a = self.get_filtered_range(ranges, idx_a, window, scan.range_max)
+        b = self.get_filtered_range(ranges, idx_b, window, scan.range_max)
         
+        if a <= 0 or b <= 0 or a > scan.range_max or b > scan.range_max:
+            return None, None
+        
+        # Angle between the two beams
+        theta = self.BEAM_ANGLE_B - self.BEAM_ANGLE_A  # 45 degrees
+        
+        # Compute the angle alpha between the vehicle and the wall
+        # alpha = atan((a*cos(theta) - b) / (a*sin(theta)))
+        numerator = a * np.cos(theta) - b
+        denominator = a * np.sin(theta)
+        
+        if abs(denominator) < 1e-6:
+            alpha = 0.0
+        else:
+            alpha = np.arctan2(numerator, denominator)
+        
+        # Compute the perpendicular distance to the wall
+        # D = b * cos(alpha)
+        distance = b * np.cos(alpha)
+        
+        # Validity check
+        if not np.isfinite(distance) or not np.isfinite(alpha):
+            return None, None
+        
+        return distance, alpha
+
+    def angle_to_index(self, scan: LaserScan, angle: float):
+        """Convert an angle to a LaserScan array index."""
+        if angle < scan.angle_min or angle > scan.angle_max:
+            return None
+        index = int((angle - scan.angle_min) / scan.angle_increment)
+        return max(0, min(index, len(scan.ranges) - 1))
+
+    def get_filtered_range(self, ranges, idx, window, max_range):
+        """Get the median-filtered range value around a specified index."""
+        start = max(0, idx - window)
+        end = min(len(ranges), idx + window + 1)
+        local = ranges[start:end]
+        
+        # Filter invalid values
+        valid = local[(local > 0) & (local < max_range) & np.isfinite(local)]
+        
+        if len(valid) == 0:
+            return max_range
+        
+        return np.median(valid)
+
+    def publish_drive_command(self, steering: float, speed: float):
+        """Publish drive control command."""
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive = AckermannDrive()
+        drive_msg.drive.steering_angle = float(steering)
+        drive_msg.drive.speed = float(speed)
+
+        msg = DriveControlMessage()
+        msg.active = True
+        msg.priority = 1000
+        msg.drive = drive_msg
+
+        self.control_publisher.publish(msg)
+
+    def publish_debug_info(self, distance: float, angle: float, steering: float, speed: float):
+        """Publish debug information."""
+        msg_d = Float64(); msg_d.data = float(distance)
+        msg_a = Float64(); msg_a.data = float(angle)
+        msg_s = Float64(); msg_s.data = float(steering)
+        msg_v = Float64(); msg_v.data = float(speed)
+        
+        self.pub_debug_distance.publish(msg_d)
+        self.pub_debug_angle.publish(msg_a)
+        self.pub_debug_steering.publish(msg_s)
+        self.pub_debug_speed.publish(msg_v)
+        
+        self.get_logger().debug(
+            f"Distance: {distance:.2f}m, Angle: {np.rad2deg(angle):.1f}deg, "
+            f"Steering: {steering:.3f}rad, Speed: {speed:.1f}m/s"
+        )
 
         
 

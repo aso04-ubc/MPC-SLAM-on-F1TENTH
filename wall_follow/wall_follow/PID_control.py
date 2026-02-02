@@ -1,5 +1,5 @@
 # wall_follow/PID_control.py
-# Fengwei
+# PID controller for left wall following
 
 import math
 from time import time
@@ -8,186 +8,114 @@ from typing import Optional
 
 class PIDControl:
     """
-    PID controller for left-wall-following.
+    PID controller for left wall following.
+        The wall is on the left side of the vehicle. The goal is to maintain a specified distance
+        and keep the vehicle parallel to the wall.
 
-    This controller uses data from the left wall to maintain
-    a target distance from it.
+        Input:
+            - theta: angle between vehicle heading and wall (rad)
+                             Positive = vehicle heading toward the wall (requires right turn)
+                             Negative = vehicle heading away from the wall (requires left turn)
+            - distance_error: distance error (m) = current_distance - target_distance
+                             Positive = too far from the wall (requires left turn)
+                             Negative = too close to the wall (requires right turn)
 
-    Input:
-      - left_angle  : angle of left wall relative to car heading (rad)
-      - left_dist   : distance to left wall (m)
-      - right_angle : angle of right wall relative to car heading (rad) [unused]
-      - right_dist  : distance to right wall (m) [unused]
-
-    Error definition:
-      - Distance error: (left_dist - target_dist)
-        Positive = car is too far from left wall, should steer left
-        Negative = car is too close to left wall, should steer right
-      - Heading error: left wall angle, indicates if car is 
-        angled relative to the wall
-
-    Output:
-      - steering command (rad)
+        Output:
+            - steering command (rad), Positive = steer right, Negative = steer left
     """
 
     def __init__(
         self,
-        kp: float = 0.3,
+        kp: float = 1.5,
         ki: float = 0.0,
-        kd: float = 0.0,
-        kp_heading: float = 0.8,
-        lookahead_L: float = 0.0,
-        steering_limit: float = 0.7,
-        integral_limit: float = 1.0,
-        d_filter_alpha: float = 0,      # alpha -> closer to 1 = smoother D
-        target_dist: float = 1.0,       # target distance from wall (m)
-        wall_weight: float = 0.5        # 1.0 = left wall only, 0.0 = right wall only, 0.5 = equal weight
+        kd: float = 0.5,
+        lookahead_L: float = 0.8,
+        steering_limit: float = 0.5,
+        integral_limit: float = 0.3,
+        d_filter_alpha: float = 0.2
     ):
-        # PID gains for distance error
         self.kp = kp
         self.ki = ki
         self.kd = kd
-        
-        # Separate gain for heading correction
-        self.kp_heading = kp_heading
-
-        # Lookahead distance for combining heading into distance error
         self.L = lookahead_L
-        
-        # Target distance from wall
-        self.target_dist = target_dist
-        
-        # Wall weight: 1.0 = left wall only, 0.0 = right wall only
-        self.wall_weight = wall_weight
-
-        # Output and state limits
         self.steering_limit = abs(steering_limit)
         self.integral_limit = abs(integral_limit)
-
-        # Derivative low-pass filter parameter (0 = no filter, 1 = full filter)
         self.d_filter_alpha = d_filter_alpha
 
-        # Internal states
+        # Internal state
         self.prev_error: Optional[float] = None
         self.prev_time: Optional[float] = None
         self.integral = 0.0
         self.d_filtered = 0.0
 
     def reset(self):
-        """Reset PID internal state (useful when restarting the controller)."""
+        """Reset PID internal state."""
         self.prev_error = None
         self.prev_time = None
         self.integral = 0.0
         self.d_filtered = 0.0
 
     def _get_time(self, sender):
-        """
-        Get current time in seconds.
-        Prefer ROS clock if sender is a Node; otherwise fall back to system time.
-        """
+        """Get current time from ROS clock or system time."""
         try:
             return sender.get_clock().now().nanoseconds * 1e-9
         except Exception:
             return time()
 
-    def run(
-        self, 
-        sender, 
-        left_angle: float, 
-        left_dist: float,
-        right_angle: float,
-        right_dist: float
-    ) -> float:
+    def run(self, sender, theta: float, distance_error: float) -> float:
         """
-        Run one PID control step using left wall only.
+        Run one PID step.
 
         Parameters
         ----------
         sender : Node
-            ROS2 node (used only for clock).
-        left_angle : float
-            Angle of left wall relative to car heading (rad).
-        left_dist : float
-            Distance to left wall (m).
-        right_angle : float
-            Angle of right wall relative to car heading (rad). [unused]
-        right_dist : float
-            Distance to right wall (m). [unused]
+            ROS2 node for clock access.
+        theta : float
+            Angle between car heading and wall (rad).
+            Positive = car pointing toward wall.
+        distance_error : float
+            Distance error (m) = current_dist - target_dist.
+            Positive = too far, Negative = too close.
 
         Returns
         -------
         float
-            Steering command (rad). Positive = steer left, Negative = steer right.
+            Steering command (rad). Positive = steer right (away from left wall).
         """
-        # Wall weight blending: 1.0 = left wall only, 0.0 = right wall only
-        w_left = self.wall_weight
-        w_right = 1.0 - self.wall_weight
+        # Error calculation:
+        # - distance_error negative (too close) -> need to steer right -> positive output
+        # - theta positive (heading toward wall) -> need to steer right -> positive output
+        # So: error = -distance_error + L * theta
+        #      = -(current - target) + L * theta
+        #      = target - current + L * theta
         
-        # Distance Error (weighted blend of left and right walls)
-        # Left wall: positive error means car is too far from left wall -> steer left
-        # Right wall: positive error means car is too close to right wall -> steer left
-        left_dist_error = self.target_dist - left_dist
-        right_dist_error = right_dist - self.target_dist
-        dist_error = w_left * left_dist_error + w_right * right_dist_error
-        
-        # Heading Error (weighted blend of left and right walls)
-        # Left wall angle: positive means angled away from left wall
-        # Right wall angle: negative of right angle to have consistent sign convention
-        heading_error = w_left * left_angle - w_right * right_angle
-        
-        # Combined Error with Lookahead
-        # Project where the car will be based on heading error
-        # This helps anticipate turns and reduces oscillation
-        error = dist_error + self.L * math.sin(heading_error)
-        
-        # Time Delta
+        error = float(distance_error) - self.L * math.sin(float(theta))
+
+        # Time delta
         current_time = self._get_time(sender)
-
-        if self.prev_time is None:
-            dt = 0.0
-        else:
+        dt = 0.0
+        if self.prev_time is not None:
             dt = current_time - self.prev_time
+            if dt <= 1e-6 or dt > 0.5:
+                dt = 0.0
 
-        # Reject unreasonable dt (startup / pause / clock jump)
-        if dt <= 1e-6 or dt > 0.5:
-            dt = 0.0
-
-        # Integral Term (with anti-windup)
-        if dt > 0.0 and self.ki != 0.0:
+        # Integral with anti-windup
+        if dt > 0.0:
             self.integral += error * dt
-            self.integral = max(
-                -self.integral_limit,
-                min(self.integral, self.integral_limit)
-            )
+            self.integral = max(-self.integral_limit, min(self.integral, self.integral_limit))
 
-        # Derivative Term (with low-pass filter)
+        # Derivative with low-pass filter
+        d_raw = 0.0
         if dt > 0.0 and self.prev_error is not None:
             d_raw = (error - self.prev_error) / dt
-        else:
-            d_raw = 0.0
+        self.d_filtered = self.d_filter_alpha * self.d_filtered + (1.0 - self.d_filter_alpha) * d_raw
 
-        # First-order low-pass filter: alpha closer to 1 = smoother
-        alpha = self.d_filter_alpha
-        self.d_filtered = alpha * self.d_filtered + (1.0 - alpha) * d_raw
+        # PID output
+        steering = self.kp * error + self.ki * self.integral + self.kd * self.d_filtered
 
-        # PID Control Law
-        # Distance-based PID
-        steering = (
-            self.kp * error
-            + self.ki * self.integral
-            + self.kd * self.d_filtered
-        )
-        
-        # Add direct heading correction for faster response
-        steering += self.kp_heading * heading_error
+        # Saturate
+        steering = max(-self.steering_limit, min(steering, self.steering_limit))
 
-        # Output Saturation
-        steering = max(
-            -self.steering_limit,
-            min(steering, self.steering_limit)
-        )
-
-        # Update state for next iteration
         self.prev_error = error
         self.prev_time = current_time
 
