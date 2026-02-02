@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     // This is the absolute minimum distance before AEB engages, regardless of TTC
     parser.add_argument("--aeb-minimum-distance", "-d")
           .help("Minimum distance threshold for AEB deactivation (in meters)")
-          .default_value(0.5)
+          .default_value(0.3)
           .scan<'g', double>();
 
     // Parse the arguments and handle errors

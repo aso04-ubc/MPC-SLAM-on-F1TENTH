@@ -20,27 +20,29 @@ class DataProcess(Node):
     PID_control : PIDControl
 
     def __init__(self):
+        self.start_time = time.time()
+
         super().__init__("wall_follow")
 
         self.window_size = 50
         # steering angle and its speed
-        self.steering_speed_relation = {0.3 : 1.5, 0.1 : 3.0, -1 : 6.0}
+        self.steering_speed_relation = {0.3 : 0.7, 0.03 : 0.7, -1 : 0.7}
 
         # Kalman filter parameters (configurable via ROS parameters)
         # Angle filters
-        self.declare_parameter('kalman_angle_R', 50.0)
+        self.declare_parameter('kalman_angle_R', 0.1)
         self.declare_parameter('kalman_angle_Q', 0.1)
         kalman_angle_R = self.get_parameter('kalman_angle_R').get_parameter_value().double_value
         kalman_angle_Q = self.get_parameter('kalman_angle_Q').get_parameter_value().double_value
 
         # Distance filters
-        self.declare_parameter('kalman_distance_R', 10.0)
+        self.declare_parameter('kalman_distance_R', 0.1)
         self.declare_parameter('kalman_distance_Q', 0.1)
         kalman_distance_R = self.get_parameter('kalman_distance_R').get_parameter_value().double_value
         kalman_distance_Q = self.get_parameter('kalman_distance_Q').get_parameter_value().double_value
 
         # steering filters
-        self.declare_parameter('kalman_steering_R', 2)
+        self.declare_parameter('kalman_steering_R', 0.1)
         self.declare_parameter('kalman_steering_Q', 0.1)
         kalman_steering_R = self.get_parameter('kalman_steering_R').get_parameter_value().double_value
         kalman_steering_Q = self.get_parameter('kalman_steering_Q').get_parameter_value().double_value
@@ -63,12 +65,6 @@ class DataProcess(Node):
             depth=1
         )
 
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            "/ego_racecar/odom",
-            self.OnReceiveOdomInfo,
-            sensor_qos
-        )
         
         self.laser_receiver = self.create_subscription(
             LaserScan,
@@ -94,9 +90,7 @@ class DataProcess(Node):
             self.pub_debug_speed = self.create_publisher(Float64, "debug/speed", 10)
 
 
-    def OnReceiveOdomInfo(self, odom_data : Odometry):
-        # Process the odometry data
-        pass
+
 
 
     def OnReceiveLaserInfo(self, lidar_data):
@@ -131,13 +125,13 @@ class DataProcess(Node):
             ranges[idx_middle_l : idx_leftmost],
             all_angles[idx_middle_l : idx_leftmost]
         )
-        left_dist = max(left_dist, min(ranges[idx_middle_l:]))
+        left_dist = max(left_dist, min(ranges[idx_middle_l:idx_leftmost]))
 
         right_dist, right_tangent = self.process_lidar_one_side(
             ranges[idx_rightmost : idx_middle_r],
             all_angles[idx_rightmost : idx_middle_r]
         )
-        right_dist = max(right_dist, min(ranges[:idx_middle_r]))
+        right_dist = max(right_dist, min(ranges[idx_rightmost:idx_middle_r]))
 
         # Apply Kalman Filter to smooth the results
         left_tangent = self.kf_left_angle.update(left_tangent)
@@ -170,8 +164,11 @@ class DataProcess(Node):
                 target_speed = speed
                 break
 
+
         temp_msg = AckermannDriveStamped()
         temp_msg.drive = AckermannDrive()
+        if time.time() - self.start_time < 1.0:
+            pid_command = 0.0
         temp_msg.drive.steering_angle = pid_command
         temp_msg.drive.speed = target_speed
 

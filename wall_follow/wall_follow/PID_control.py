@@ -8,23 +8,23 @@ from typing import Optional
 
 class PIDControl:
     """
-    PID controller for wall-following using both walls.
+    PID controller for left-wall-following.
 
-    This controller uses data from both left and right walls to keep
-    the vehicle centered between them.
+    This controller uses data from the left wall to maintain
+    a target distance from it.
 
     Input:
       - left_angle  : angle of left wall relative to car heading (rad)
       - left_dist   : distance to left wall (m)
-      - right_angle : angle of right wall relative to car heading (rad)
-      - right_dist  : distance to right wall (m)
+      - right_angle : angle of right wall relative to car heading (rad) [unused]
+      - right_dist  : distance to right wall (m) [unused]
 
     Error definition:
-      - Distance error: (right_dist - left_dist) / 2
-        Positive = car is closer to left wall, should steer right
-        Negative = car is closer to right wall, should steer left
-      - Heading error: average of wall angles, indicates if car is 
-        angled relative to the corridor
+      - Distance error: (left_dist - target_dist)
+        Positive = car is too far from left wall, should steer left
+        Negative = car is too close to left wall, should steer right
+      - Heading error: left wall angle, indicates if car is 
+        angled relative to the wall
 
     Output:
       - steering command (rad)
@@ -33,13 +33,15 @@ class PIDControl:
     def __init__(
         self,
         kp: float = 0.3,
-        ki: float = 0.3,
-        kd: float = 0.6,
+        ki: float = 0.0,
+        kd: float = 0.0,
         kp_heading: float = 0.8,
-        lookahead_L: float = 0.8,
+        lookahead_L: float = 0.0,
         steering_limit: float = 0.7,
         integral_limit: float = 1.0,
-        d_filter_alpha: float = 0       # alpha -> closer to 1 = smoother D
+        d_filter_alpha: float = 0,      # alpha -> closer to 1 = smoother D
+        target_dist: float = 1.0,       # target distance from wall (m)
+        wall_weight: float = 0.5        # 1.0 = left wall only, 0.0 = right wall only, 0.5 = equal weight
     ):
         # PID gains for distance error
         self.kp = kp
@@ -51,6 +53,12 @@ class PIDControl:
 
         # Lookahead distance for combining heading into distance error
         self.L = lookahead_L
+        
+        # Target distance from wall
+        self.target_dist = target_dist
+        
+        # Wall weight: 1.0 = left wall only, 0.0 = right wall only
+        self.wall_weight = wall_weight
 
         # Output and state limits
         self.steering_limit = abs(steering_limit)
@@ -91,7 +99,7 @@ class PIDControl:
         right_dist: float
     ) -> float:
         """
-        Run one PID control step using both walls.
+        Run one PID control step using left wall only.
 
         Parameters
         ----------
@@ -102,27 +110,30 @@ class PIDControl:
         left_dist : float
             Distance to left wall (m).
         right_angle : float
-            Angle of right wall relative to car heading (rad).
+            Angle of right wall relative to car heading (rad). [unused]
         right_dist : float
-            Distance to right wall (m).
+            Distance to right wall (m). [unused]
 
         Returns
         -------
         float
             Steering command (rad). Positive = steer left, Negative = steer right.
         """
+        # Wall weight blending: 1.0 = left wall only, 0.0 = right wall only
+        w_left = self.wall_weight
+        w_right = 1.0 - self.wall_weight
         
-        # Distance Error
-        # Positive error means car is closer to left wall -> need to steer right (negative steering)
-        # Negative error means car is closer to right wall -> need to steer left (positive steering)
-        dist_error = (left_dist - right_dist) / 2.0
+        # Distance Error (weighted blend of left and right walls)
+        # Left wall: positive error means car is too far from left wall -> steer left
+        # Right wall: positive error means car is too close to right wall -> steer left
+        left_dist_error = self.target_dist - left_dist
+        right_dist_error = right_dist - self.target_dist
+        dist_error = w_left * left_dist_error + w_right * right_dist_error
         
-        # Heading Error
-        # Average of both wall angles gives the heading error relative to corridor
-        # If both walls have positive angle, car is angled to the right
-        # If both walls have negative angle, car is angled to the left
-        # Note: left wall angle is typically negative when parallel, right wall is positive
-        heading_error = (left_angle + right_angle) / 2.0
+        # Heading Error (weighted blend of left and right walls)
+        # Left wall angle: positive means angled away from left wall
+        # Right wall angle: negative of right angle to have consistent sign convention
+        heading_error = w_left * left_angle - w_right * right_angle
         
         # Combined Error with Lookahead
         # Project where the car will be based on heading error
