@@ -183,7 +183,8 @@ namespace Impl {
          * @param msg Odometry message with vehicle velocity
          */
         void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
-            m_CurrentSpeed.store(msg->twist.twist.linear.x, std::memory_order_release);
+            // RCLCPP_WARN(get_logger(), "Odom received: speed=%.3f", std::abs(msg->twist.twist.linear.x));
+            m_CurrentSpeed.store(std::abs(msg->twist.twist.linear.x), std::memory_order_release);
         }
 
         /**
@@ -307,6 +308,7 @@ namespace Impl {
         // Subscribe to odometry for vehicle speed
         m_OdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>(
             "/ego_racecar/odom", 10, std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
+            // "/odom", 10, std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
 
         return CallbackReturn::SUCCESS;
     }
@@ -608,8 +610,10 @@ namespace Impl {
         double min_ttc = std::numeric_limits<double>::infinity();
         double min_distance = std::numeric_limits<double>::infinity();
 
+        // scan range 
+        const int test = msg->ranges.size() / 4; 
         // Iterate through all laser scan points
-        for (size_t i = 0; i < msg->ranges.size(); ++i) {
+        for (size_t i = test; i < msg->ranges.size() - test; ++i) {
             double r = msg->ranges[i];
 
             // Skip invalid measurements
