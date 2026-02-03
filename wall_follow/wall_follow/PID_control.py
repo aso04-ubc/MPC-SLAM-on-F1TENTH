@@ -33,8 +33,8 @@ class PIDControl:
     def __init__(
         self,
         kp: float = 0.3,
-        ki: float = 0.2,
-        kd: float = 0.3,
+        ki: float = 0.05,
+        kd: float = 0.0,
         kp_heading: float = 0.8,
         lookahead_L: float = 0.3,
         steering_limit: float = 0.7,

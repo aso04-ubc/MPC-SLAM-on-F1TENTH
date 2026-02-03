@@ -28,10 +28,12 @@ class GapFollowing(Node):
 
     """
     Gap Following
-        - look for distances greater than self.minimum distance to find gaps
-        - calculate the width of the gap and follow the widest
-        - use np.diff to quickly find where a gap appears
-        - use PID to steer the car towards the center of the gap
+        1. smooth data using a moving average
+        2. create a bubble around the obstacles for safe driving
+        3. look for distances greater than self.minimum distance to find gaps
+        4. calculate the width of the gap and follow the widest
+        5. use np.diff to quickly find where a gap appears
+        6. use PID to steer the car towards the center of the gap
     """
     def scan_callback(self, msg):
 
@@ -64,7 +66,6 @@ class GapFollowing(Node):
             - the start and end indices of the largest gap
     """
     def find_largest_gap(self, ranges_np):
-
 
         gaps = ranges_np > self.minimum_distance
 
