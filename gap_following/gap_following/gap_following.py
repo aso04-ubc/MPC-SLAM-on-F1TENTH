@@ -20,6 +20,8 @@ class GapFollowing(Node):
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
 
+        self.car_width = 0.5
+
     def odom_callback(self, msg):
         self.current_velocity = msg.twist.twist.linear.x
 
@@ -79,6 +81,28 @@ class GapFollowing(Node):
             widest_end = gap_ends[widest]
 
         return widest_start, widest_end
+    
+    """
+    Apply a bubble around obstacles
+        Arguments
+            - @self: data associated with GapFollowing
+            - @msg: LiDAR data
+            - @np_ranges: numpy array of range data
+        Return
+            - new range data with bubble applied
+    """
+    def bubble(self, msg, np_ranges):
+
+        nearest_index = np.argmin(np_ranges)
+        nearest_distance = np_ranges(nearest_index)
+
+        mask_angle = math.atan(self.car_width/nearest_distance)
+        mask_lasers = int(mask_angle/msg.angle_increment)
+
+        bubbled_ranges = np_ranges.copy()
+        bubbled_ranges[min(0, nearest_index-mask_lasers):max(nearest_index+mask_lasers, len(np_ranges))]
+
+        return bubbled_ranges
 
 
 
