@@ -39,50 +39,10 @@ int main(int argc, char** argv) {
     // Initialize ROS2 middleware
     rclcpp::init(argc, argv);
 
-    // Separate ROS2 arguments from application-specific arguments
-    // ROS2 arguments (e.g., --ros-args) are removed, leaving only our custom args
-    std::vector<std::string> non_ros_args_strings = rclcpp::remove_ros_arguments(argc, argv);
-
-    // Convert std::vector<std::string> to char** for argparse compatibility
-    std::vector<char*> new_argv_vec;
-    for (const auto& arg : non_ros_args_strings) {
-        new_argv_vec.push_back(const_cast<char*>(arg.c_str()));
-    }
-    new_argv_vec.push_back(nullptr); // Null-terminate the argument list
-
-    int new_argc = static_cast<int>(non_ros_args_strings.size());
-    char** new_argv = new_argv_vec.data();
-
-    // Set up argument parser for AEB configuration
-    argparse::ArgumentParser parser("Drive Control Node");
-
-    // Define command-line argument: Time-To-Collision threshold
-    // This determines how much time before collision the AEB should engage
-    parser.add_argument("--aeb-ttc-threshold", "-t")
-          .help("Time-To-Collision threshold for AEB activation (in seconds)")
-          .default_value(0.3)
-          .scan<'g', double>();
-
-    // Define command-line argument: Minimum distance threshold
-    // This is the absolute minimum distance before AEB engages, regardless of TTC
-    parser.add_argument("--aeb-minimum-distance", "-d")
-          .help("Minimum distance threshold for AEB deactivation (in meters)")
-          .default_value(0.5)
-          .scan<'g', double>();
-
-    // Parse the arguments and handle errors
-    try {
-        parser.parse_args(new_argc, new_argv);
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
-        std::cerr << parser.help().str() << std::endl;
-        return -1;
-    }
-
     // Create configuration structure with parsed values
     NodeCreationInfo info;
-    info.aeb_ttc_threshold = parser.get<double>("--aeb-ttc-threshold");
-    info.aeb_minimum_distance = parser.get<double>("--aeb-minimum-distance");
+    info.aeb_ttc_threshold = 0.5;
+    info.aeb_minimum_distance = 0.25;
 
     // Create the drive control node using factory function
     auto node = CreateApplicationNode(info);

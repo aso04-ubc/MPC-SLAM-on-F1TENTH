@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 project(safety)
 
-
 # Default to C++
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
@@ -28,22 +27,12 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-
-
 find_package(rclcpp REQUIRED)
 find_package(dev_b7_interfaces REQUIRED)
 find_package(ackermann_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
-
-include(FetchContent)
-FetchContent_Declare(argparse
-        GIT_REPOSITORY
-        https://github.com/p-ranav/argparse
-        GIT_TAG
-        v3.2)
-FetchContent_MakeAvailable(argparse)
 
 SET(DRIVE_CONTROL_NODE_NAME safety_node)
 
@@ -66,11 +55,6 @@ ament_target_dependencies(
 )
 
 ament_package()
-
-target_link_libraries(
-        ${DRIVE_CONTROL_NODE_NAME}
-        argparse::argparse
-)
 
 target_precompile_headers(
         ${DRIVE_CONTROL_NODE_NAME}

@@ -3,8 +3,10 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped
+from dev_b7_interfaces.msg import DriveControlMessage
 import math
 import numpy as np
+
 
 class GapFollowing(Node):
 
@@ -13,7 +15,7 @@ class GapFollowing(Node):
 
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
+        self.drive_pub = self.create_publisher(DriveControlMessage, DriveControlMessage.BUILTIN_TOPIC_NAME_STRING, 10)
 
         self.current_velocity = 0.0
 
@@ -33,25 +35,26 @@ class GapFollowing(Node):
         - use np.diff to quickly find where a gap appears
         - use PID to steer the car towards the center of the gap
     """
+
     def scan_callback(self, msg):
 
         range_np = np.array(msg.ranges)
 
         # filter out noisy range data
         window = 5
-        smooth_ranges = np.convolve(range_np, np.ones(window)/window, mode='same')
+        smooth_ranges = np.convolve(range_np, np.ones(window) / window, mode='same')
 
         bubble_ranges = self.bubble(msg, smooth_ranges)
 
         largest_gap_start, largest_gap_end = self.find_largest_gap(bubble_ranges)
 
-        if not largest_gap_start or not largest_gap_end: # stop if there is no gap found, the car is stuck
+        if not largest_gap_start or not largest_gap_end:  # stop if there is no gap found, the car is stuck
             self.current_velocity = 0
 
         gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
         gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
 
-        desired_angle = (gap_end_angle - gap_start_angle)/2.0
+        desired_angle = (gap_end_angle - gap_start_angle) / 2.0
 
     """
     Gap finding
@@ -63,8 +66,8 @@ class GapFollowing(Node):
         Returns
             - the start and end indices of the largest gap
     """
-    def find_largest_gap(self, ranges_np):
 
+    def find_largest_gap(self, ranges_np):
 
         gaps = ranges_np > self.minimum_distance
 
@@ -84,7 +87,7 @@ class GapFollowing(Node):
             widest_end = gap_ends[widest]
 
         return widest_start, widest_end
-    
+
     """
     Apply a bubble around obstacles
         Arguments
@@ -94,29 +97,29 @@ class GapFollowing(Node):
         Return
             - new range data with bubble applied
     """
-    def bubble(self, msg, np_ranges):
 
+    def bubble(self, msg, np_ranges):
         nearest_index = np.argmin(np_ranges)
         nearest_distance = np_ranges(nearest_index)
 
-        mask_angle = math.atan(self.car_width/nearest_distance)
-        mask_lasers = int(mask_angle/msg.angle_increment)
+        mask_angle = math.atan(self.car_width / nearest_distance)
+        mask_lasers = int(mask_angle / msg.angle_increment)
 
         bubbled_ranges = np_ranges.copy()
-        bubbled_ranges[min(0, nearest_index-mask_lasers):max(nearest_index+mask_lasers, len(np_ranges))]
+        bubbled_ranges[min(0, nearest_index - mask_lasers):max(nearest_index + mask_lasers, len(np_ranges))]
 
         return bubbled_ranges
-
 
 
 def main(args=None):
     rclpy.init(args=args)
     gap_following = GapFollowing()
     rclpy.spin(gap_following)
-    
+
     # Good practice to destroy node explicitly
     gap_following.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()

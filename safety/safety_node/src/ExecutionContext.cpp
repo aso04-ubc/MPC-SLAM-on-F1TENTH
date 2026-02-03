@@ -37,7 +37,7 @@ ExecutionContextMultithreaded::ExecutionContextMultithreaded(size_t thread_count
 std::weak_ptr<ILifecycleNodeEXT> ExecutionContextMultithreaded::Attach(std::shared_ptr<ILifecycleNodeEXT> node) {
     m_Executor->add_node(node->get_node_base_interface());
     node->OnAttachToContext(shared_from_this());
-    std::lock_guard lock(m_VectorAccessMutex);
+    std::lock_guard<std::mutex> lock(m_VectorAccessMutex);
     m_AttachedNodes.push_back(node);
     return node;
 }
@@ -61,7 +61,7 @@ void ExecutionContextMultithreaded::Detach(std::weak_ptr<ILifecycleNodeEXT> node
     if (auto shared_node = node.lock()) {
         m_Executor->remove_node(shared_node->get_node_base_interface());
         shared_node->OnDetachFromContext(shared_from_this());
-        std::lock_guard lock(m_VectorAccessMutex);
+        std::lock_guard<std::mutex> lock(m_VectorAccessMutex);
         m_AttachedNodes.erase(
             std::remove_if(
                 m_AttachedNodes.begin(),

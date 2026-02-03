@@ -143,7 +143,6 @@ namespace Impl {
         CallbackReturn on_shutdown(const rclcpp_lifecycle::State&) override;
 
     private:
-
         /**
          * @brief AEB loop that runs in a separate thread
          *
@@ -183,7 +182,8 @@ namespace Impl {
          * @param msg Odometry message with vehicle velocity
          */
         void OnProcessOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
-            m_CurrentSpeed.store(msg->twist.twist.linear.x, std::memory_order_release);
+            // RCLCPP_WARN(get_logger(), "Odom received: speed=%.3f", std::abs(msg->twist.twist.linear.x));
+            m_CurrentSpeed.store(std::abs(msg->twist.twist.linear.x), std::memory_order_release);
         }
 
         /**
@@ -215,7 +215,6 @@ namespace Impl {
         void OnDriveCommand(const dev_b7_interfaces::msg::DriveControlMessage::SharedPtr msg);
 
     private:
-
         const double TTCThreshold; ///< Time-To-Collision threshold for AEB (seconds)
         const double DistanceThreshold; ///< Minimum distance threshold for AEB (meters)
 
@@ -227,7 +226,6 @@ namespace Impl {
         std::atomic<bool> m_ShouldStop{false}; ///< Flag to signal threads to stop
 
     private:
-
         std::mutex m_MapAccessMutex; ///< Protects the priority map
 
         /**
@@ -243,12 +241,10 @@ namespace Impl {
         ///< Last command (for AEB steering preservation)
 
     private:
-
         std::thread m_AEBSubmissionThread; ///< Thread that publishes stop commands when AEB is active
         std::thread m_ConsoleInputListenerThread; ///< Thread that listens for console commands
 
     private:
-
         /**
          * @brief Publisher for Ackermann drive commands
          * Lifecycle publisher that can be activated/deactivated
@@ -261,11 +257,9 @@ namespace Impl {
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr m_OdomSubscription;
 
     private:
-
         std::weak_ptr<IExecutionContext> m_CurrentExecutionContext; ///< Weak reference to the executor
 
     public:
-
         virtual void OnAttachToContext(const std::shared_ptr<IExecutionContext>& context) override;
 
         virtual void OnDetachFromContext(const std::shared_ptr<IExecutionContext>& context) override;
@@ -307,6 +301,7 @@ namespace Impl {
         // Subscribe to odometry for vehicle speed
         m_OdomSubscription = this->create_subscription<nav_msgs::msg::Odometry>(
             "/ego_racecar/odom", 10, std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
+        // "/odom", 10, std::bind(&DriveControl::OnProcessOdometry, this, std::placeholders::_1));
 
         return CallbackReturn::SUCCESS;
     }
@@ -439,7 +434,8 @@ namespace Impl {
 
                 // Try to get the last drive command to preserve steering angle
                 {
-                    std::unique_lock lock(m_LastDriveControlMessageMutex, std::chrono::milliseconds(10));
+                    std::unique_lock<std::timed_mutex> lock(m_LastDriveControlMessageMutex,
+                                                            std::chrono::milliseconds(10));
                     if (lock.owns_lock()) {
                         stop_msg = m_LastReceivedMessage;
                         // m_LastReceivedMessage = ackermann_msgs::msg::AckermannDriveStamped{};
@@ -608,8 +604,10 @@ namespace Impl {
         double min_ttc = std::numeric_limits<double>::infinity();
         double min_distance = std::numeric_limits<double>::infinity();
 
+        // scan range 
+        const int test = msg->ranges.size() / 4;
         // Iterate through all laser scan points
-        for (size_t i = 0; i < msg->ranges.size(); ++i) {
+        for (size_t i = test; i < msg->ranges.size() - test; ++i) {
             double r = msg->ranges[i];
 
             // Skip invalid measurements
@@ -645,10 +643,10 @@ namespace Impl {
             }
         } else {
             // Disengage AEB if currently active
-            if (m_IsAEBActive.load(std::memory_order_acquire)) {
-                m_IsAEBActive.store(false, std::memory_order_release);
-                RCLCPP_INFO(get_logger(), "AEB Released.");
-            }
+//            if (m_IsAEBActive.load(std::memory_order_acquire)) {
+//                m_IsAEBActive.store(false, std::memory_order_release);
+//                RCLCPP_INFO(get_logger(), "AEB Released.");
+//            }
         }
     }
 
@@ -705,9 +703,9 @@ namespace Impl {
 
             // Select and publish the highest priority command
             // rbegin() gives the last element (highest key/priority)
-            if (auto highest_priority_msg(
-                    mPriorityToLastMessageMap.rbegin()->second);
-                highest_priority_msg && !m_IsAEBActive.load(std::memory_order_acquire)) {
+            auto highest_priority_msg =
+                mPriorityToLastMessageMap.rbegin()->second;
+            if (highest_priority_msg && !m_IsAEBActive.load(std::memory_order_acquire)) {
                 // Publish the highest priority command (if AEB is not active)
                 m_AckermannDrivePublisher->publish(highest_priority_msg->drive);
             }
