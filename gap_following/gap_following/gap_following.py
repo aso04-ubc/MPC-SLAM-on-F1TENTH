@@ -34,6 +34,11 @@ class GapFollowing(Node):
 
         largest_gap_start, largest_gap_end = self.find_largest_gap(msg)
 
+        gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
+        gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
+
+        desired_angle = (gap_end_angle - gap_start_angle)/2.0
+
     """
     Gap finding
     
