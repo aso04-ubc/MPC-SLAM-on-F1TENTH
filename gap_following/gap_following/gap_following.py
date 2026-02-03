@@ -32,7 +32,16 @@ class GapFollowing(Node):
     """
     def scan_callback(self, msg):
 
-        largest_gap_start, largest_gap_end = self.find_largest_gap(msg)
+        range_np = np.array(msg.ranges)
+
+        # filter out noisy range data
+        window = 5
+        smooth_ranges = np.convolve(range_np, np.ones(window)/window, mode='same')
+
+        largest_gap_start, largest_gap_end = self.find_largest_gap(smooth_ranges)
+
+        if not largest_gap_start or not largest_gap_end:
+            self.current_velocity = 0
 
         gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
         gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
@@ -49,10 +58,10 @@ class GapFollowing(Node):
         Returns
             - the start and end indices of the largest gap
     """
-    def find_largest_gap(self, msg):
+    def find_largest_gap(self, ranges_np):
 
-        range_np = np.array(msg.ranges)
-        gaps = range_np > self.minimum_distance
+
+        gaps = ranges_np > self.minimum_distance
 
         gaps_padded = np.concatenate([0], gaps.astype(int), [0])
         gaps_marked = np.diff(gaps_padded)
