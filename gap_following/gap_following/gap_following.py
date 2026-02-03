@@ -21,6 +21,7 @@ class GapFollowing(Node):
         self.minimum_gap_width = 5.0
 
         self.car_width = 0.5
+        self.steering_limit = 0.7
 
     def odom_callback(self, msg):
         self.current_velocity = msg.twist.twist.linear.x
@@ -40,9 +41,11 @@ class GapFollowing(Node):
         window = 5
         smooth_ranges = np.convolve(range_np, np.ones(window)/window, mode='same')
 
-        largest_gap_start, largest_gap_end = self.find_largest_gap(smooth_ranges)
+        bubble_ranges = self.bubble(msg, smooth_ranges)
 
-        if not largest_gap_start or not largest_gap_end:
+        largest_gap_start, largest_gap_end = self.find_largest_gap(bubble_ranges)
+
+        if not largest_gap_start or not largest_gap_end: # stop if there is no gap found, the car is stuck
             self.current_velocity = 0
 
         gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
