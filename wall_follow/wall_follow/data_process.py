@@ -171,7 +171,7 @@ class DataProcess(Node):
         temp_msg.drive.speed = target_speed
 
         full_msg = DriveControlMessage()
-        full_msg.active = True
+        full_msg.active = False
         full_msg.priority = 1000 # Subject to change
         full_msg.drive = temp_msg
 

@@ -2,8 +2,9 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from ackermann_msgs.msg import AckermannDriveStamped
+from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from dev_b7_interfaces.msg import DriveControlMessage
+from std_msgs.msg import Float64 # For your debug messages
 import math
 import numpy as np
 
@@ -15,7 +16,8 @@ class GapFollowing(Node):
 
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.drive_pub = self.create_publisher(DriveControlMessage, DriveControlMessage.BUILTIN_TOPIC_NAME_STRING, 10)
+        # self.drive_pub = self.create_publisher(DriveControlMessage, DriveControlMessage.BUILTIN_TOPIC_NAME_STRING, 10) 
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, "/drive", 10)
 
         self.current_velocity = 0.0
 
@@ -54,25 +56,43 @@ class GapFollowing(Node):
 
         largest_gap_start, largest_gap_end = self.find_largest_gap(bubble_ranges)
 
-        if not largest_gap_start or not largest_gap_end:  # stop if there is no gap found, the car is stuck
+        gap_start_angle = 0
+        gap_end_angle = 0
+
+        if not largest_gap_start or not largest_gap_end:  # straighten the wheel and stop if there is no gap found, the car is stuck
             self.current_velocity = 0
+        else :
+            gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
+            gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
 
-        gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
-        gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
-
-        desired_angle = (gap_end_angle - gap_start_angle) / 2.0 # angle heading of the gap relative to the car, trying to make this 0
+        desired_angle = (gap_end_angle + gap_start_angle) / 2.0 # angle heading of the gap relative to the car, trying to make this 0
 
         steer_angle = max(-self.steering_limit, min(self.steering_limit, desired_angle))
+
+        # drive_msg = AckermannDriveStamped()
+        # drive_msg.drive = AckermannDrive()
+
+        # control_msg = DriveControlMessage()
+        # control_msg.active = True
+        # control_msg.priority = 1000 # Subject to change
+        # control_msg.drive = drive_msg
+
+        # drive_msg.drive.steering_angle = float(steer_angle * self.kp)
+        # drive_msg.drive.speed = float(2.0-abs(steer_angle))
+
+        # self.drive_pub.publish(control_msg)
 
         drive = AckermannDriveStamped()
 
         drive.header.stamp = self.get_clock().now().to_msg()
         drive.header.frame_id = "base_link"
 
-        drive.drive.steering_angle = steer_angle * self.kp
-        drive.drive.speed = abs(2.0*steer_angle)
+        drive.drive.steering_angle = float(steer_angle * self.kp)
+        drive.drive.speed = float(2.0 - abs(steer_angle)) 
 
         self.drive_pub.publish(drive)
+
+
 
 
     """
@@ -99,6 +119,8 @@ class GapFollowing(Node):
         gap_widths = gap_ends - gap_starts
 
         usable_gaps = gap_widths > self.minimum_gap_width
+
+        widest_start, widest_end = None, None
 
         if usable_gaps.any():
             widest = np.argmax(usable_gaps * gap_widths)
