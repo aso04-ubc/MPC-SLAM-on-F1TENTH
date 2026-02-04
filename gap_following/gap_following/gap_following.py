@@ -24,7 +24,7 @@ class GapFollowing(Node):
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
 
-        self.car_width = 1.0
+        self.car_width = 0.3
         self.steering_limit = 0.7
 
         self.kp = 0.8
@@ -49,13 +49,14 @@ class GapFollowing(Node):
         range_np = np.array(msg.ranges)
 
         # filter out noisy range data
-        range_np = np.clip(range_np, 0, 2.0)
+        # range_np = np.clip(range_np, 0, 5.0)
         window = 5
         smooth_ranges = np.convolve(range_np, np.ones(window) / window, mode='same')
 
         bubble_ranges = self.bubble(msg, smooth_ranges)
+        disparity_extended_ranges = self.extend_disparity(msg, smooth_ranges)
 
-        largest_gap_start, largest_gap_end = self.find_largest_gap(bubble_ranges)
+        largest_gap_start, largest_gap_end = self.find_largest_gap(disparity_extended_ranges)
 
         gap_start_angle = 0
         gap_end_angle = 0
@@ -150,6 +151,29 @@ class GapFollowing(Node):
 
         return bubbled_ranges
 
+    def extend_disparity(self, msg, np_ranges, gap_threshold = 2.0):
+
+        finder = np.diff(np_ranges)
+        disparities_idx = np.where(finder > gap_threshold)
+
+        extended = np.copy(np_ranges)
+
+        if len(disparities_idx) == 0:
+            return np_ranges
+
+        for index in disparities_idx:
+
+            distance_to_obstable = min(np_ranges[index-1], np_ranges[index], np_ranges[index+1])
+            extend_angle = math.atan((self.car_width/2.0)/distance_to_obstable)
+
+            mask_width = int(np.ceil(extend_angle / msg.angle_increment)) # number of lasers to mask
+
+            begin = max(0, index-mask_width)
+            end = min(len(np_ranges), index+mask_width)
+
+            extended[begin:end] = np.minimum(extended[begin:end], distance_to_obstable)
+        
+        return extended
 
 def main(args=None):
     rclpy.init(args=args)
