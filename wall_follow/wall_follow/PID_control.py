@@ -4,6 +4,7 @@
 import math
 from time import time
 from typing import Optional
+import rclpy.logging
 
 
 class PIDControl:
@@ -166,6 +167,8 @@ class PIDControl:
             + self.ki * self.integral
             + self.kd * self.d_filtered
         )
+        logger = rclpy.logging.get_logger('PIDControl')
+        logger.info(f"{error * self.kp}")
         
         # Add direct heading correction for faster response
         steering += self.kp_heading * heading_error
