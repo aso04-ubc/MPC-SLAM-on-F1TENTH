@@ -40,8 +40,8 @@ class SafetyNode(Node):
         super().__init__('safety_node')
         
         # Declare and get parameters
-        self.declare_parameter('ttc_threshold', 0.5)
-        self.declare_parameter('distance_threshold', 0.25)
+        self.declare_parameter('ttc_threshold', 0.3)
+        self.declare_parameter('distance_threshold', 0.0)
         
         self.ttc_threshold = self.get_parameter('ttc_threshold').value
         self.distance_threshold = self.get_parameter('distance_threshold').value
