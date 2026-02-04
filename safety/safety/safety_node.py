@@ -25,6 +25,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from dev_b7_interfaces.msg import DriveControlMessage
+from safety.safety.config import SIM
 
 
 class SafetyNode(Node):
@@ -40,8 +41,8 @@ class SafetyNode(Node):
         super().__init__('safety_node')
         
         # Declare and get parameters
-        self.declare_parameter('ttc_threshold', 0.3)
-        self.declare_parameter('distance_threshold', 0.0)
+        self.declare_parameter('ttc_threshold', 0.57)
+        self.declare_parameter('distance_threshold', 0.25)
         
         self.ttc_threshold = self.get_parameter('ttc_threshold').value
         self.distance_threshold = self.get_parameter('distance_threshold').value
@@ -70,7 +71,7 @@ class SafetyNode(Node):
         # Subscriptions
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/ego_racecar/odom',
+            '/ego_racecar/odom' if SIM else '/odom',
             self.odom_callback,
             10
         )
@@ -157,10 +158,11 @@ class SafetyNode(Node):
                 )
                 self.is_aeb_active = True
         else:    
-            # if self.is_aeb_active:
-            #     self.is_aeb_active = False
-            #     self.get_logger().info('AEB Released')
-            pass
+            if self.is_aeb_active:
+                return
+                self.is_aeb_active = False
+                self.get_logger().info('AEB Released')
+            # pass
     
     def drive_control_callback(self, msg: DriveControlMessage):
         """
