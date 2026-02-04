@@ -24,7 +24,7 @@ class GapFollowing(Node):
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
 
-        self.car_width = 0.5
+        self.car_width = 1.0
         self.steering_limit = 0.7
 
         self.kp = 0.8
@@ -49,6 +49,7 @@ class GapFollowing(Node):
         range_np = np.array(msg.ranges)
 
         # filter out noisy range data
+        range_np = np.clip(range_np, 0, 2.0)
         window = 5
         smooth_ranges = np.convolve(range_np, np.ones(window) / window, mode='same')
 
@@ -91,8 +92,6 @@ class GapFollowing(Node):
         drive.drive.speed = float(2.0 - abs(steer_angle)) 
 
         self.drive_pub.publish(drive)
-
-
 
 
     """
