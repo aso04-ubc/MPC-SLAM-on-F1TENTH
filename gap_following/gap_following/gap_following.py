@@ -25,6 +25,10 @@ class GapFollowing(Node):
         self.car_width = 0.5
         self.steering_limit = 0.7
 
+        self.kp = 0.8
+        self.kd = 0.2
+        self.ki = 0.0
+
     def odom_callback(self, msg):
         self.current_velocity = msg.twist.twist.linear.x
 
@@ -56,7 +60,20 @@ class GapFollowing(Node):
         gap_start_angle = msg.angle_min + largest_gap_start * msg.angle_increment
         gap_end_angle = msg.angle_min + largest_gap_end * msg.angle_increment
 
-        desired_angle = (gap_end_angle - gap_start_angle) / 2.0
+        desired_angle = (gap_end_angle - gap_start_angle) / 2.0 # angle heading of the gap relative to the car, trying to make this 0
+
+        steer_angle = max(-self.steering_limit, min(self.steering_limit, desired_angle))
+
+        drive = AckermannDriveStamped()
+
+        drive.header.stamp = self.get_clock().now().to_msg()
+        drive.header.frame_id = "base_link"
+
+        drive.drive.steering_angle = steer_angle * self.kp
+        drive.drive.speed = abs(2.0*steer_angle)
+
+        self.drive_pub.publish(drive)
+
 
     """
     Gap finding
@@ -73,11 +90,11 @@ class GapFollowing(Node):
 
         gaps = ranges_np > self.minimum_distance
 
-        gaps_padded = np.concatenate([0], gaps.astype(int), [0])
+        gaps_padded = np.concatenate(([0.0], gaps.astype(int), [0.0]))
         gaps_marked = np.diff(gaps_padded)
 
-        gap_starts = np.where(gaps_marked == 1)
-        gap_ends = np.where(gaps_marked == -1)
+        gap_starts = np.where(gaps_marked == 1)[0]
+        gap_ends = np.where(gaps_marked == -1)[0]
 
         gap_widths = gap_ends - gap_starts
 
@@ -102,7 +119,7 @@ class GapFollowing(Node):
 
     def bubble(self, msg, np_ranges):
         nearest_index = np.argmin(np_ranges)
-        nearest_distance = np_ranges(nearest_index)
+        nearest_distance = np_ranges[nearest_index]
 
         mask_angle = math.atan(self.car_width / nearest_distance)
         mask_lasers = int(mask_angle / msg.angle_increment)
