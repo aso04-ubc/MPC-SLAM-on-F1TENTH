@@ -158,15 +158,17 @@ class GapFollowing(Node):
 
         extended = np.copy(np_ranges)
 
-        if len(disparities_idx) == 0:
+        if len(disparities_idx[0]) == 0:
             return np_ranges
 
-        for index in disparities_idx:
+        for index in disparities_idx[0]:
 
-            distance_to_obstable = min(np_ranges[index], np_ranges[index+1]).item()
-            extend_angle = np.arctan((self.car_width/2.0)/distance_to_obstable).item()
+            if index + 1 == len(disparities_idx[0]): 
+                continue
+            distance_to_obstable = min(np_ranges[index], np_ranges[index+1])
+            extend_angle = np.arctan((self.car_width/2.0)/distance_to_obstable)
 
-            mask_width = np.ceil(extend_angle / msg.angle_increment) # number of lasers to mask
+            mask_width = np.ceil(extend_angle.item() / msg.angle_increment) # number of lasers to mask
 
             begin = max(0, index-mask_width)
             end = min(len(np_ranges), index+mask_width)
