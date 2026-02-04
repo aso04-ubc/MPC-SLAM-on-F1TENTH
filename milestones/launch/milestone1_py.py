@@ -4,8 +4,8 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
         Node(
-            package='safety_python',
-            executable='safety_python_node',
+            package='safety',
+            executable='safety_node',
             name='safety_node_launch',
             output='screen',
             emulate_tty=True,

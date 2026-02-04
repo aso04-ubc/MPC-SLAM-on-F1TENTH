@@ -40,18 +40,18 @@ Python implementation of the safety node with Autonomous Emergency Braking (AEB)
 ### Build the package
 ```bash
 cd ~/sim_ws
-colcon build --packages-select safety_python
+colcon build --packages-select safety
 source install/setup.bash
 ```
 
 ### Run with default parameters
 ```bash
-ros2 run safety_python safety_python_node
+ros2 run safety safety_python_node
 ```
 
 ### Run with custom parameters
 ```bash
-ros2 run safety_python safety_python_node --ros-args \
+ros2 run safety safety_python_node --ros-args \
   -p ttc_threshold:=0.6 \
   -p distance_threshold:=0.3
 ```

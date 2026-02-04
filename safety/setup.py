@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'safety_python'
+package_name = 'safety'
 
 setup(
     name=package_name,
@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'safety_python_node = safety_python.safety_python_node:main',
+            'safety_node = safety.safety_node:main',
         ],
     },
 )
