@@ -103,7 +103,7 @@ class GapFollowing(Node):
 
         drive.drive.steering_angle = float(steer_angle)
         # drive.drive.speed = float(2.0 - abs(steer_angle)) 
-        drive.drive.speed = 6.0 / (1 + 0.2 * d_desired) # make the speed inversely proportional to the rate of change
+        drive.drive.speed = 6.0 / (1 + 0.2 * abs(d_desired)) # make the speed inversely proportional to the rate of change
 
         self.drive_pub.publish(drive)
 
