@@ -16,5 +16,12 @@ def generate_launch_description():
             executable='wall_follow_node',
             name='wall_follow_node_launch',
             output='screen',
-        )
+        ),
+
+        Node(
+            package='gap_following',
+            executable='gap_following',
+            name='gap_following_launch',
+            output='screen',
+        ),
     ])
