@@ -20,6 +20,8 @@ class GapFollowing(Node):
         self.drive_pub = self.create_publisher(AckermannDriveStamped, "/drive", 10)
 
         self.current_velocity = 0.0
+        self.previous_angle = 0.0
+        self.previous_time = self.get_clock()
 
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
@@ -69,8 +71,6 @@ class GapFollowing(Node):
 
         desired_angle = (gap_end_angle + gap_start_angle) / 2.0 # angle heading of the gap relative to the car, trying to make this 0
 
-        steer_angle = max(-self.steering_limit, min(self.steering_limit, desired_angle))
-
         # drive_msg = AckermannDriveStamped()
         # drive_msg.drive = AckermannDrive()
 
@@ -84,13 +84,26 @@ class GapFollowing(Node):
 
         # self.drive_pub.publish(control_msg)
 
+        ## DERIVATIVE ##
+
+        current_time = self.get_clock().now()
+        dt = (current_time - self.prev_time).nanoseconds / 1e9
+
+        if dt > 0:
+            d_desired = (desired_angle - self.previous_angle) / dt
+        d_desired = (desired_angle - self.previous_angle)
+
+        input_steer = d_desired * self.kd + desired_angle * self.kp
+        steer_angle = max(-self.steering_limit, min(self.steering_limit, input_steer))
+
         drive = AckermannDriveStamped()
 
         drive.header.stamp = self.get_clock().now().to_msg()
         drive.header.frame_id = "base_link"
 
-        drive.drive.steering_angle = float(steer_angle * self.kp)
-        drive.drive.speed = float(2.0 - abs(steer_angle)) 
+        drive.drive.steering_angle = float(steer_angle)
+        # drive.drive.speed = float(2.0 - abs(steer_angle)) 
+        drive.drive.speed = 4.0 / (1 + 0.5 * d_desired) # make the speed inversely proportional to the rate of change
 
         self.drive_pub.publish(drive)
 
