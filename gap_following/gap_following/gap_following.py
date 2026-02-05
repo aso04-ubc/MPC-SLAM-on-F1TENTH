@@ -21,7 +21,7 @@ class GapFollowing(Node):
 
         self.current_velocity = 0.0
         self.previous_angle = 0.0
-        self.previous_time = self.get_clock()
+        self.previous_time = self.get_clock().now()
 
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
@@ -29,8 +29,8 @@ class GapFollowing(Node):
         self.car_width = 0.3
         self.steering_limit = 0.7
 
-        self.kp = 0.8
-        self.kd = 0.2
+        self.kp = 0.6
+        self.kd = 0.15
         self.ki = 0.0
 
     def odom_callback(self, msg):
@@ -87,7 +87,7 @@ class GapFollowing(Node):
         ## DERIVATIVE ##
 
         current_time = self.get_clock().now()
-        dt = (current_time - self.prev_time).nanoseconds / 1e9
+        dt = (current_time - self.previous_time).nanoseconds / 1e9
 
         if dt > 0:
             d_desired = (desired_angle - self.previous_angle) / dt
@@ -103,7 +103,7 @@ class GapFollowing(Node):
 
         drive.drive.steering_angle = float(steer_angle)
         # drive.drive.speed = float(2.0 - abs(steer_angle)) 
-        drive.drive.speed = 4.0 / (1 + 0.5 * d_desired) # make the speed inversely proportional to the rate of change
+        drive.drive.speed = 4.0 / (1 + 0.3 * d_desired) # make the speed inversely proportional to the rate of change
 
         self.drive_pub.publish(drive)
 
@@ -163,6 +163,10 @@ class GapFollowing(Node):
         bubbled_ranges[min(0, nearest_index - mask_lasers):max(nearest_index + mask_lasers, len(np_ranges))]
 
         return bubbled_ranges
+
+    """
+
+    """
 
     def extend_disparity(self, msg, np_ranges, gap_threshold=0.3): 
             
