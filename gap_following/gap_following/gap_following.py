@@ -151,31 +151,36 @@ class GapFollowing(Node):
 
         return bubbled_ranges
 
-    def extend_disparity(self, msg, np_ranges, gap_threshold = 2.0):
+    def extend_disparity(self, msg, np_ranges, gap_threshold=0.3): 
+            
+            finder = np.abs(np.diff(np_ranges))
+            disparities_idx = np.where(finder > gap_threshold)[0] 
 
-        finder = np.diff(np_ranges)
-        disparities_idx = np.where(finder > gap_threshold)
+            extended = np.copy(np_ranges)
 
-        extended = np.copy(np_ranges)
+            if len(disparities_idx) == 0:
+                return np_ranges
 
-        if len(disparities_idx[0]) == 0:
-            return np_ranges
+            for index in disparities_idx:
+                if index + 1 >= len(np_ranges):
+                    continue
 
-        for index in disparities_idx[0]:
+                distance_to_obstacle = min(np_ranges[index], np_ranges[index+1])
+                
+                # protect against divide by zero
+                if distance_to_obstacle < 0.1:
+                    distance_to_obstacle = 0.1
+                    
+                extend_angle = np.arctan((self.car_width / 2.0) / distance_to_obstacle)
+                
+                mask_width = int(np.ceil(extend_angle / msg.angle_increment))
 
-            if index + 1 == len(disparities_idx[0]): 
-                continue
-            distance_to_obstable = min(np_ranges[index], np_ranges[index+1])
-            extend_angle = np.arctan((self.car_width/2.0)/distance_to_obstable)
+                begin = int(max(0, index - mask_width))
+                end = int(min(len(np_ranges), index + mask_width + 1))
 
-            mask_width = np.ceil(extend_angle.item() / msg.angle_increment) # number of lasers to mask
+                extended[begin:end] = np.minimum(extended[begin:end], distance_to_obstacle)
 
-            begin = max(0, index-mask_width)
-            end = min(len(np_ranges), index+mask_width)
-
-            extended[begin:end] = np.minimum(extended[begin:end], distance_to_obstable)
-        
-        return extended
+            return extended
 
 def main(args=None):
     rclpy.init(args=args)
