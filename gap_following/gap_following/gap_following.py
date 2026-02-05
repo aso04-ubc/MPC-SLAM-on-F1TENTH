@@ -171,7 +171,7 @@ class GapFollowing(Node):
                 if distance_to_obstacle < 0.1:
                     distance_to_obstacle = 0.1
                     
-                extend_angle = np.arctan((self.car_width / 2.0) / distance_to_obstacle)
+                extend_angle = np.arctan((self.car_width) / distance_to_obstacle)
                 
                 mask_width = int(np.ceil(extend_angle / msg.angle_increment))
 
