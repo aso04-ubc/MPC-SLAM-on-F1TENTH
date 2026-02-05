@@ -103,7 +103,7 @@ class GapFollowing(Node):
 
         drive.drive.steering_angle = float(steer_angle)
         # drive.drive.speed = float(2.0 - abs(steer_angle)) 
-        drive.drive.speed = 4.0 / (1 + 0.3 * d_desired) # make the speed inversely proportional to the rate of change
+        drive.drive.speed = 6.0 / (1 + 0.2 * d_desired) # make the speed inversely proportional to the rate of change
 
         self.drive_pub.publish(drive)
 
@@ -165,7 +165,13 @@ class GapFollowing(Node):
         return bubbled_ranges
 
     """
-
+    Mask lasers half a car's width away from obstacles
+    Arguments:
+        - @msg: use angle increments to determine number of lasers to mask
+        - @np_ranges: numpy array of range data
+        - @gap_threshold: difference in adjacent range to be considered a disparity
+    Returns:
+        - @return: a numpy array of ranges with disparities extended
     """
 
     def extend_disparity(self, msg, np_ranges, gap_threshold=0.3): 
