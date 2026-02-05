@@ -54,7 +54,7 @@ class GapFollowing(Node):
         smooth_ranges = np.convolve(range_np, np.ones(window) / window, mode='same')
 
         bubble_ranges = self.bubble(msg, smooth_ranges)
-        disparity_extended_ranges = self.extend_disparity(msg, smooth_ranges)
+        disparity_extended_ranges = self.extend_disparity(msg, bubble_ranges)
 
         largest_gap_start, largest_gap_end = self.find_largest_gap(disparity_extended_ranges)
 
