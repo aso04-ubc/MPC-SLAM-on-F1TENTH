@@ -18,5 +18,5 @@ Describes what we need to do
 
 ### Easier Alternatives ###
 
-2. **Reference Path Tracking:** Optimize for the most effective path, considering grip levels
-3. **Dynamic Window Approach:** Optimize cost function (time) based on obstacle position and velocity
+**Reference Path Tracking:** Optimize for the most effective path, considering grip levels
+**Dynamic Window Approach:** Optimize cost function (time) based on obstacle position and velocity
