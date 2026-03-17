@@ -8,6 +8,8 @@ from std_msgs.msg import Float64 # For your debug messages
 import math
 import numpy as np
 
+TRACK_SCAN_ANGLE_THRESHOLD = 45
+
 
 class GapFollowing(Node):
 
@@ -22,6 +24,10 @@ class GapFollowing(Node):
         self.current_velocity = 0.0
         self.previous_angle = 0.0
         self.previous_time = self.get_clock().now()
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+        self.map = np.array([])
 
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
@@ -35,6 +41,11 @@ class GapFollowing(Node):
 
     def odom_callback(self, msg):
         self.current_velocity = msg.twist.twist.linear.x
+        self.x = msg.pose.pose.position.x
+        self.y = msg.pose.pose.position.y
+
+        q = msg.pose.pose.orientation
+        self.yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
 
     """
     Gap Following
