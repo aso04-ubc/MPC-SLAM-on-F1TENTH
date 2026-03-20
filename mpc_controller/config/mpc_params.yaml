@@ -1,0 +1,21 @@
+mpc_controller_node:
+  ros__parameters:
+    use_sim_time: true
+    dt: 0.02
+    horizon_N: 15
+    wheelbase_L: 0.33
+    v_min: 0.0
+    v_max: 4.0
+    delta_max: 0.4
+    a_min: -3.0
+    a_max: 3.0
+    ddelta_max: 1.0
+    Q: [20, 10, 2, 1]
+    R: [1, 10]
+    R_delta: [0.1, 5]
+    solver_time_budget_ms: 10
+    soft_constraint_weight: 1000.0
+    reference_mode: constant_speed_placeholder
+    target_speed: 0.0
+    odom_timeout_sec: 0.25
+    stop_on_invalid_reference: true
