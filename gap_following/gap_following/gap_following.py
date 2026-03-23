@@ -7,6 +7,7 @@ from dev_b7_interfaces.msg import DriveControlMessage
 from std_msgs.msg import Float64 # For your debug messages
 import math
 import numpy as np
+from f1tenth_utils.drive_utils import wrap_drive_message
 
 TRACK_SCAN_ANGLE_THRESHOLD = 45
 
@@ -27,7 +28,7 @@ class GapFollowing(Node):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
-        self.map = np.array([])
+        self.map = np.array((0,2))
 
         self.minimum_distance = 3.0
         self.minimum_gap_width = 5.0
@@ -59,6 +60,8 @@ class GapFollowing(Node):
 
     def scan_callback(self, msg):
 
+        self.build_map(msg)
+
         range_np = np.array(msg.ranges)
 
         # filter out noisy range data
@@ -82,19 +85,6 @@ class GapFollowing(Node):
 
         desired_angle = (gap_end_angle + gap_start_angle) / 2.0 # angle heading of the gap relative to the car, trying to make this 0
 
-        # drive_msg = AckermannDriveStamped()
-        # drive_msg.drive = AckermannDrive()
-
-        # control_msg = DriveControlMessage()
-        # control_msg.active = True
-        # control_msg.priority = 1000 # Subject to change
-        # control_msg.drive = drive_msg
-
-        # drive_msg.drive.steering_angle = float(steer_angle * self.kp)
-        # drive_msg.drive.speed = float(2.0-abs(steer_angle))
-
-        # self.drive_pub.publish(control_msg)
-
         ## DERIVATIVE ##
 
         current_time = self.get_clock().now()
@@ -107,16 +97,9 @@ class GapFollowing(Node):
         input_steer = d_desired * self.kd + desired_angle * self.kp
         steer_angle = max(-self.steering_limit, min(self.steering_limit, input_steer))
 
-        drive = AckermannDriveStamped()
+        speed = 2.0 / (1 + 0.2 * abs(d_desired)) # make the speed inversely proportional to the rate of change
 
-        drive.header.stamp = self.get_clock().now().to_msg()
-        drive.header.frame_id = "base_link"
-
-        drive.drive.steering_angle = float(steer_angle)
-        # drive.drive.speed = float(2.0 - abs(steer_angle)) 
-        drive.drive.speed = 6.0 / (1 + 0.2 * abs(d_desired)) # make the speed inversely proportional to the rate of change
-
-        self.drive_pub.publish(drive)
+        self.drive_pub.publish(wrap_drive_message(speed, steer_angle))
 
 
     """
@@ -215,6 +198,46 @@ class GapFollowing(Node):
                 extended[begin:end] = np.minimum(extended[begin:end], distance_to_obstacle)
 
             return extended
+    
+    def build_map(self, scan_msg):
+
+        ranges = np.array(scan_msg.ranges)
+        
+        angles = scan_msg.angle_min + np.arange(len(ranges)) * scan_msg.angle_increment
+        
+        valid_mask = (np.isfinite(ranges)) & \
+                        (ranges > scan_msg.range_min) & \
+                        (ranges < scan_msg.range_max)
+        
+        valid_ranges = ranges[valid_mask]
+        valid_angles = angles[valid_mask]
+        
+        global_angles = self.yaw + valid_angles
+        
+        global_x = self.x + valid_ranges * np.cos(global_angles)
+        global_y = self.y + valid_ranges * np.sin(global_angles)
+        
+        new_points = np.column_stack((global_x, global_y))
+        
+        if self.map.size == 0:
+            self.map = new_points
+        else:
+            self.map = np.vstack((self.map, new_points))
+            
+            # prevent redundant points
+            self.map = np.unique(np.round(self.map / 0.05) * 0.05, axis=0)
+
+    def save_map(self, filename="track_map.csv"):
+        if self.map.size == 0:
+            self.get_logger().warn("Map is empty, nothing to save.")
+            return
+
+        np.savetxt(filename, self.map, delimiter=",", header="x,y", comments="")
+        self.get_logger().info(f"Map saved successfully to {os.path.abspath(filename)}")
+
+    def destroy_node(self):
+        self.save_map()
+        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
