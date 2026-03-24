@@ -14,10 +14,10 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[
                 {'sim': sim},
-                {'ttc_full': 0.60}, 
-                {'distance_full': 0.30},
+                {'ttc_full': 0.20}, 
+                {'distance_full': 0.20},
                 {'partial_brake_decel' : 0.3},
-                {'ttc_partial' : 1.0},
+                {'ttc_partial' : 0.5},
                 {'aeb_auto_release': True}],
         ),
 
