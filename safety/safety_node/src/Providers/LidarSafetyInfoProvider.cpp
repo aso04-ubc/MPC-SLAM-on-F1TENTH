@@ -50,7 +50,7 @@ namespace AEB {
         double min_distance = std::numeric_limits<double>::infinity();
         double min_ttc = std::numeric_limits<double>::infinity();
 
-        const double angle_tolerance = 0.4;
+        const double angle_tolerance = 0.35;
         for (size_t i = 0; i < msg->ranges.size(); ++i) {
             double r = msg->ranges[i];
 
