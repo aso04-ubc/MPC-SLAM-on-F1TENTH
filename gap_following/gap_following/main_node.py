@@ -20,7 +20,6 @@ from sensor_msgs.msg import LaserScan, Image
 from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from dev_b7_interfaces.msg import DriveControlMessage
-from f1tenth_utils.drive_utils import wrap_drive_message
 
 from gap_following.gap_utils import GapFollowAlgo
 from gap_following.PID_control import PIDControl
@@ -58,6 +57,7 @@ class GapFollowingNode(Node):
             10
         )
 
+        # Subscribe to odometry for speed-based adjustments
         self.odom_sub = self.create_subscription(
             Odometry,
             '/ego_racecar/odom' if self.sim else '/odom',
@@ -81,6 +81,7 @@ class GapFollowingNode(Node):
         
         self.create_timer(1/30, self.visualization_timer_callback)
 
+        # Variables to store latest LiDAR info for HUD
         self._latest_ranges = None
         self._latest_angle_min = None
         self._latest_angle_increment = None
@@ -124,6 +125,7 @@ class GapFollowingNode(Node):
             'side_distance_percentile': 20.0,
         }
 
+        # State variables
         self.prev_steering_angle = 0.0
         self.current_speed = 0.0
         self.have_odom = False
@@ -138,8 +140,9 @@ class GapFollowingNode(Node):
         configured_path = self.get_parameter('config_path').get_parameter_value().string_value
         self.config_path = configured_path if configured_path else default_config_path
 
+        # Load config from JSON (first load)
         self.hot_reload_config()
-        
+        # Periodic reload timer (every 1 second)
         self.create_timer(1.0, self.hot_reload_config)
 
         self.get_logger().info('Gap Following Node initialized')
@@ -498,7 +501,19 @@ class GapFollowingNode(Node):
             speed: desired speed in m/s
             steering_angle: desired steering angle in radians
         """
-        full_msg = wrap_drive_message(speed, steering_angle)
+        # Create internal Ackermann drive message
+        temp_msg = AckermannDriveStamped()
+        temp_msg.header.stamp = self.get_clock().now().to_msg()
+        temp_msg.header.frame_id = 'base_link'
+        temp_msg.drive = AckermannDrive()
+        temp_msg.drive.speed = float(speed)
+        temp_msg.drive.steering_angle = float(steering_angle)
+        
+        # Wrap in DriveControlMessage for safety node
+        full_msg = DriveControlMessage()
+        full_msg.active = True
+        full_msg.priority = 1004  # Medium priority (adjust as needed)
+        full_msg.drive = temp_msg
         
         self.drive_pub.publish(full_msg)
 
@@ -603,7 +618,6 @@ class GapFollowingNode(Node):
         cv2.putText(self.canvas, "White=Raw  Red=Inflated  Green=Gap  Blue=Target  Cyan=Final", 
                     (10, self.canvas_h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
 
-
     def build_map(self, scan_msg):
 
         ranges = np.array(scan_msg.ranges)
@@ -644,7 +658,6 @@ class GapFollowingNode(Node):
         self.save_map()
         super().destroy_node()
 
-
 def main(args=None):
     """Main entry point for the gap following node."""
     rclpy.init(args=args)
@@ -656,7 +669,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.save_map()
         node.destroy_node()
         rclpy.shutdown()
 
