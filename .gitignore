@@ -4,3 +4,6 @@ f1tenth_gym_ros
 /build/
 /install/
 /log/
+gap_following/additionals/rosbag2*
+/gap_following/additionals/mapping/
+/gap_following/additionals/slam_map_final.png
