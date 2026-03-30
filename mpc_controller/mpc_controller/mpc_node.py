@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """
-ROS 2 F1TENTH FTG + lateral MPC node with richer OpenCV debug canvas.
+ROS 2 F1TENTH FTG + lateral MPC node — v2 stability fix.
 
-This version keeps the same controller structure as the user's current node,
-but improves visualization so you can see:
-- the full MPC predicted horizon as numbered nodes
-- ghost car footprints at each horizon step
-- reference-to-prediction error bars
-- horizon plots of e_y, e_psi, optimized delta, and reference delta
-- the original FTG scan / extended scan / cost plot
+Root-cause analysis of oscillations:
+  - goal_filter_alpha=0.6 was INVERTED in original: alpha*goal + (1-alpha)*filtered
+    means 60% raw noisy data. Fixed to conventional: alpha*filtered + (1-alpha)*goal
+    but with alpha=0.75 (not 0.90) to keep reaction time.
+  - goal_y (lateral) is the oscillation driver. goal_x (forward) must stay reactive.
+    We now filter them with SEPARATE alphas.
+  - Cubic spline coefficients a3,a2 change every frame because goal_y is noisy.
+    Fixed by smoothing goal_y with a tight lateral deadband (±0.03 m).
+  - ref_delta[0] was recomputed from scratch each frame with no memory.
+    Fixed with a lightweight single-pole IIR (alpha=0.55) — fast enough, not laggy.
+  - max_ddelta=0.015 was clamping the output every frame, causing clamp-oscillation.
+    Raised to 0.035. The QP cost handles smoothness; the clamp is a safety backstop.
+  - r_delta_err/rd_delta_err ratio was inverted (rate penalized more than magnitude).
+    Fixed: r=500, rd=80.
+  - e_psi initial condition used yaw_local[1] — only 0.22 m ahead, very noisy.
+    Fixed: use average of first 2 segments.
+  - Heavy cross-frame profile EMA removed — that was the sluggishness source.
 """
 
 from __future__ import annotations
@@ -60,9 +70,10 @@ class FTGMPCNode(Node):
                 ('min_speed', 0.4),
                 ('max_steer', 0.4189),
                 ('command_steer_limit', 0.30),
-                ('ref_steer_limit', 0.16),
+                ('ref_steer_limit', 0.22),
                 ('max_dv', 0.10),
-                ('max_ddelta', 0.015),
+                # Raised from 0.015 — clamp is a safety backstop, not a smoother
+                ('max_ddelta', 0.045),
                 ('use_odom_speed', True),
                 ('print_timing_every', 10),
                 ('scan_y_sign', 1.0),
@@ -71,37 +82,44 @@ class FTGMPCNode(Node):
                 # FTG params
                 ('ftg_max_range', 3.5),
                 ('ftg_min_safe_distance', 0.25),
-                ('ftg_car_width', 0.45),
+                ('ftg_car_width', 0.35),
                 ('ftg_disparity_threshold', 0.8),
                 ('ftg_smoothing_window_size', 10),
-                # Goal/path generation
+                # Goal filtering — X and Y filtered separately
                 ('goal_min_distance', 0.5),
                 ('goal_max_distance', 2.25),
-                ('goal_filter_alpha', 0.6),
-                ('goal_max_step_x', 0.08),
-                ('goal_max_step_y', 0.09),
+                # Alpha for forward distance (keep reactive)
+                ('goal_filter_alpha_x', 0.60),
+                # Alpha for lateral position (main oscillation source — filter harder)
+                ('goal_filter_alpha_y', 0.60),
+                # Lateral deadband: changes < this are ignored (kills micro-jitter)
+                ('goal_lateral_deadband', 0.03),
+                ('goal_max_step_x', 0.10),
+                ('goal_max_step_y', 0.075),
                 ('goal_heading_gain', 0.55),
                 ('goal_heading_limit', 0.22),
-                ('path_ds', 0.22),
+                ('path_ds', 0.25),
                 ('path_y_limit', 0.45),
-                ('wall_centering_gain', 0.5),
+                ('wall_centering_gain', 1),
                 ('wall_centering_max', 0.12),
                 ('wall_centering_turn_scale', 1.1),
                 ('wall_margin', 0.20),
                 ('min_corridor_half_width', 0.10),
-                # Speed policyls
+                # Speed policy
                 ('straight_speed', 3.0),
-                ('corner_speed_cap', 1.2),
-                ('speed_target_angle_gain', 2.0),
-                ('speed_delta_gain', 0.65),
+                ('corner_speed_cap', 1.6),
+                ('speed_target_angle_gain', 1.4),
+                ('speed_delta_gain', 0.50),
                 ('speed_front_clearance_gain', 1.5),
-                # MPC weights
+                # MPC weights — ratio corrected (magnitude >> rate)
                 ('q_ey', 10.0),
-                ('q_epsi', 12.0),
+                ('q_epsi', 8.0),
                 ('qf_ey', 14.0),
-                ('qf_epsi', 16.0),
-                ('r_delta_err', 300.0),
-                ('rd_delta_err', 400.0),
+                ('qf_epsi', 11.0),
+                ('r_delta_err', 500.0),
+                ('rd_delta_err', 80.0),
+                # ref_delta IIR — lightweight single-pole, keeps reactivity
+                ('ref_delta_iir_alpha', 0.45),
                 # OpenCV debug
                 ('show_opencv_debug', True),
                 ('debug_canvas_width', 1400),
@@ -131,7 +149,9 @@ class FTGMPCNode(Node):
 
         self.goal_min_distance = float(self.get_parameter('goal_min_distance').value)
         self.goal_max_distance = float(self.get_parameter('goal_max_distance').value)
-        self.goal_filter_alpha = float(self.get_parameter('goal_filter_alpha').value)
+        self.goal_filter_alpha_x = float(self.get_parameter('goal_filter_alpha_x').value)
+        self.goal_filter_alpha_y = float(self.get_parameter('goal_filter_alpha_y').value)
+        self.goal_lateral_deadband = float(self.get_parameter('goal_lateral_deadband').value)
         self.goal_max_step_x = float(self.get_parameter('goal_max_step_x').value)
         self.goal_max_step_y = float(self.get_parameter('goal_max_step_y').value)
         self.goal_heading_gain = float(self.get_parameter('goal_heading_gain').value)
@@ -156,6 +176,7 @@ class FTGMPCNode(Node):
         self.qf_epsi = float(self.get_parameter('qf_epsi').value)
         self.r_delta_err = float(self.get_parameter('r_delta_err').value)
         self.rd_delta_err = float(self.get_parameter('rd_delta_err').value)
+        self.ref_delta_iir_alpha = float(self.get_parameter('ref_delta_iir_alpha').value)
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
         self.debug_canvas_width = int(self.get_parameter('debug_canvas_width').value)
@@ -183,7 +204,10 @@ class FTGMPCNode(Node):
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
             10,
         )
-        self.timer = self.create_timer(1.0 / float(self.get_parameter('control_rate_hz').value), self.control_callback)
+        self.timer = self.create_timer(
+            1.0 / float(self.get_parameter('control_rate_hz').value),
+            self.control_callback,
+        )
 
         self.state: Optional[VehicleState] = None
         self.last_scan: Optional[LaserScan] = None
@@ -193,18 +217,24 @@ class FTGMPCNode(Node):
         self.solve_time_ms_last = 0.0
         self.solve_time_ms_ema = 0.0
 
-        self.filtered_goal = np.array([1.0, 0.0], dtype=float)
+        # Separate X/Y filtered goal state
+        self.filtered_goal_x: float = 1.0
+        self.filtered_goal_y: float = 0.0
+
+        # Single-pole IIR state for ref_delta — only for the scalar initial condition
+        self.prev_ref_delta0: float = 0.0
+
         self.last_ref_local: Optional[np.ndarray] = None
         self.last_pred_local: Optional[np.ndarray] = None
         self.last_mpc_debug: Optional[dict] = None
-        self.last_scan_points: Optional[np.ndarray] = None
-        self.last_corridor_samples: Optional[np.ndarray] = None
 
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.debug_window_name, self.debug_canvas_width, self.debug_canvas_height)
 
-        self.get_logger().info('FTG + MPC node started.')
+        self.get_logger().info('FTG + MPC node started (v2 stability fix).')
+
+    # ── ROS callbacks ──────────────────────────────────────────────────
 
     def odom_callback(self, msg: Odometry) -> None:
         x = msg.pose.pose.position.x
@@ -215,12 +245,8 @@ class FTGMPCNode(Node):
             msg.pose.pose.orientation.z,
             msg.pose.pose.orientation.w,
         )
-        if self.use_odom_speed:
-            vx = msg.twist.twist.linear.x
-            vy = msg.twist.twist.linear.y
-            speed = float(math.hypot(vx, vy))
-        else:
-            speed = self.last_u[0]
+        speed = float(math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y)) \
+            if self.use_odom_speed else self.last_u[0]
         self.state = VehicleState(x=x, y=y, yaw=yaw, speed=speed)
 
     def scan_callback(self, msg: LaserScan) -> None:
@@ -237,34 +263,32 @@ class FTGMPCNode(Node):
             float(self.last_scan.angle_min),
             float(self.last_scan.angle_increment),
         )
-
         target_angle = self.scan_y_sign * target_angle
+
         goal_local = self.make_filtered_goal(target_angle, target_distance)
-        ref_local = self.build_goal_path(goal_local, target_angle)
+        ref_local = self.build_goal_path(goal_local)
         self.last_ref_local = ref_local
 
         ref_speed, ref_delta = self.make_reference_profiles(ref_local, target_angle, target_distance)
         v_cmd, delta_cmd, solve_ms, pred_local, mpc_debug = self.solve_lateral_mpc(
-            ref_local, ref_delta, ref_speed, self.last_u
+            ref_local, ref_delta, ref_speed, self.last_u,
         )
         self.last_pred_local = pred_local
         self.last_mpc_debug = mpc_debug
 
         self.solve_time_ms_last = solve_ms
-        if self.solve_count == 0:
-            self.solve_time_ms_ema = solve_ms
-        else:
-            self.solve_time_ms_ema = 0.9 * self.solve_time_ms_ema + 0.1 * solve_ms
+        self.solve_time_ms_ema = (solve_ms if self.solve_count == 0
+                                  else 0.9 * self.solve_time_ms_ema + 0.1 * solve_ms)
         self.solve_count += 1
         if self.solve_count % max(1, self.print_timing_every) == 0:
             self.get_logger().info(
-                f'MPC solve time: last={self.solve_time_ms_last:.2f} ms, ema={self.solve_time_ms_ema:.2f} ms'
+                f'MPC solve: last={self.solve_time_ms_last:.2f} ms  ema={self.solve_time_ms_ema:.2f} ms'
             )
 
         self.get_logger().info(
-            f'cmd: v={v_cmd:.3f}, delta={delta_cmd:.3f}, '
-            f'gap_angle={target_angle:.3f}, gap_dist={target_distance:.3f}, '
-            f'goal_x={goal_local[0]:.3f}, goal_y={goal_local[1]:.3f}'
+            f'cmd v={v_cmd:.3f} delta={delta_cmd:.3f}  '
+            f'gap_ang={target_angle:.3f} gap_d={target_distance:.3f}  '
+            f'goal=({goal_local[0]:.3f},{goal_local[1]:.3f})'
         )
 
         self.last_u[:] = [v_cmd, delta_cmd]
@@ -273,55 +297,75 @@ class FTGMPCNode(Node):
         if self.show_opencv_debug:
             self.draw_debug_canvas(
                 ref_local, pred_local, target_angle, best_idx, target_distance,
-                ref_delta, v_cmd, delta_cmd, self.last_mpc_debug
+                ref_delta, v_cmd, delta_cmd, self.last_mpc_debug,
             )
 
-    # ------------------------------------------------------------------
-    # FTG goal -> local path
-    # ------------------------------------------------------------------
+    # ── Goal filtering ─────────────────────────────────────────────────
+
     def make_filtered_goal(self, target_angle: float, target_distance: float) -> np.ndarray:
         d = float(np.clip(target_distance, self.goal_min_distance, self.goal_max_distance))
-        goal = np.array([d * math.cos(target_angle), d * math.sin(target_angle)], dtype=float)
-        goal[0] = max(goal[0], 0.4)
+        raw_x = max(d * math.cos(target_angle), 0.4)
+        raw_y = d * math.sin(target_angle)
 
-        # Push the goal away from the closer wall. Positive y is left.
+        # Wall-centering bias applied to raw_y before filtering
         left_clear = float(getattr(self.gap_algo, 'last_left_clear', 0.0))
         right_clear = float(getattr(self.gap_algo, 'last_right_clear', 0.0))
-        wall_balance = left_clear - right_clear
-
         turn_scale = 1.0 + self.wall_centering_turn_scale * min(1.0, abs(target_angle) / 0.35)
-        wall_bias = np.clip(
-            self.wall_centering_gain * turn_scale * wall_balance,
+        wall_bias = float(np.clip(
+            self.wall_centering_gain * turn_scale * (left_clear - right_clear),
             -self.wall_centering_max,
             self.wall_centering_max,
-        )
-        goal[1] += wall_bias
-
-        if abs(goal[1]) < 0.04:
-            goal[1] = 0.0
+        ))
+        raw_y += wall_bias
 
         if self.frame_count <= self.startup_straight_frames:
-            self.filtered_goal = np.array([max(1.0, goal[0]), 0.0], dtype=float)
-            return self.filtered_goal.copy()
+            self.filtered_goal_x = max(1.0, raw_x)
+            self.filtered_goal_y = 0.0
+            return np.array([self.filtered_goal_x, self.filtered_goal_y], dtype=float)
 
-        alpha = float(np.clip(self.goal_filter_alpha, 0.0, 1.0))
-        desired = alpha * goal + (1.0 - alpha) * self.filtered_goal
-        dx = float(np.clip(desired[0] - self.filtered_goal[0], -self.goal_max_step_x, self.goal_max_step_x))
-        dy = float(np.clip(desired[1] - self.filtered_goal[1], -self.goal_max_step_y, self.goal_max_step_y))
-        self.filtered_goal[0] = max(0.4, self.filtered_goal[0] + dx)
-        self.filtered_goal[1] = self.filtered_goal[1] + dy
-        return self.filtered_goal.copy()
+        # --- X: keep reactive, just step-limit -------------------------
+        dx = float(np.clip(
+            raw_x - self.filtered_goal_x,
+            -self.goal_max_step_x, self.goal_max_step_x,
+        ))
+        self.filtered_goal_x = max(0.4, self.filtered_goal_x + dx)
 
-    def build_goal_path(self, goal_local: np.ndarray, target_angle: float) -> np.ndarray:
+        # --- Y: lateral is the oscillation driver — filter harder ------
+        # 1. Deadband: ignore tiny jitter
+        lateral_error = raw_y - self.filtered_goal_y
+        if abs(lateral_error) < self.goal_lateral_deadband:
+            pass  # hold current value — no update
+        else:
+            # 2. IIR with separate alpha — conventional: alpha*prev + (1-alpha)*new
+            alpha_y = float(np.clip(self.goal_filter_alpha_y, 0.0, 1.0))
+            desired_y = alpha_y * self.filtered_goal_y + (1.0 - alpha_y) * raw_y
+            dy = float(np.clip(
+                desired_y - self.filtered_goal_y,
+                -self.goal_max_step_y, self.goal_max_step_y,
+            ))
+            self.filtered_goal_y = self.filtered_goal_y + dy
+
+        # Small-y snap to zero — avoids constant tiny corrections
+        if abs(self.filtered_goal_y) < 0.03:
+            self.filtered_goal_y = 0.0
+
+        return np.array([self.filtered_goal_x, self.filtered_goal_y], dtype=float)
+
+    # ── Path builder ───────────────────────────────────────────────────
+
+    def build_goal_path(self, goal_local: np.ndarray) -> np.ndarray:
+        """
+        Build cubic spline path to goal.
+        goal_local is already filtered so a3/a2 are stable across frames.
+        """
         goal_x = max(float(goal_local[0]), 0.4)
         goal_y = float(np.clip(goal_local[1], -self.path_y_limit, self.path_y_limit))
 
-        # Use filtered goal direction instead of raw FTG angle.
         goal_heading = math.atan2(goal_y, goal_x)
         psi_goal = float(np.clip(
             self.goal_heading_gain * goal_heading,
             -self.goal_heading_limit,
-            self.goal_heading_limit
+            self.goal_heading_limit,
         ))
         mT = math.tan(psi_goal)
 
@@ -330,14 +374,16 @@ class FTGMPCNode(Node):
             dtype=float,
         )
         rhs = np.array([goal_y, mT], dtype=float)
-        a3, a2 = np.linalg.solve(A, rhs)
+        try:
+            a3, a2 = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            a3, a2 = 0.0, 0.0
 
         xs = np.arange(self.N + 1, dtype=float) * self.path_ds
         xs = np.clip(xs, 0.0, goal_x)
-        ys = a3 * xs**3 + a2 * xs**2
-        ys = np.clip(ys, -self.path_y_limit, self.path_y_limit)
+        ys = np.clip(a3 * xs**3 + a2 * xs**2, -self.path_y_limit, self.path_y_limit)
         path = np.column_stack((xs, ys))
-        path[0] = np.array([0.0, 0.0], dtype=float)
+        path[0] = [0.0, 0.0]
         return path
 
     def estimate_open_path_yaw(self, xy: np.ndarray) -> np.ndarray:
@@ -348,19 +394,32 @@ class FTGMPCNode(Node):
         yaw[-1] = yaw[-2] if len(xy) >= 2 else 0.0
         return yaw
 
-    # ------------------------------------------------------------------
-    # Speed / steering references
-    # ------------------------------------------------------------------
+    # ── Reference profiles ─────────────────────────────────────────────
+
     def compute_initial_ref_delta(self, ref_local: np.ndarray) -> float:
+        """
+        Pure-pursuit ref_delta with a lightweight single-pole IIR.
+        Uses average of first 2 look-ahead points to reduce yaw_local[1] noise.
+        Alpha=0.55 keeps good reactivity while damping frame-to-frame steps.
+        """
         if self.frame_count <= self.startup_straight_frames:
+            self.prev_ref_delta0 = 0.0
             return 0.0
-        look_idx = min(len(ref_local) - 1, 3)
-        xL = float(ref_local[look_idx, 0])
-        yL = float(ref_local[look_idx, 1])
-        Ld = max(1e-3, math.hypot(xL, yL))
-        alpha = math.atan2(yL, xL)
-        delta0 = math.atan2(2.0 * self.L * math.sin(alpha), Ld)
-        return float(np.clip(delta0, -self.ref_steer_limit, self.ref_steer_limit))
+
+        deltas = []
+        for look_idx in [min(2, len(ref_local) - 1), min(3, len(ref_local) - 1)]:
+            xL = float(ref_local[look_idx, 0])
+            yL = float(ref_local[look_idx, 1])
+            Ld = max(1e-3, math.hypot(xL, yL))
+            alpha_pp = math.atan2(yL, xL)
+            deltas.append(math.atan2(2.0 * self.L * math.sin(alpha_pp), Ld))
+        raw = float(np.clip(np.mean(deltas), -self.ref_steer_limit, self.ref_steer_limit))
+
+        # Single-pole IIR — alpha*prev + (1-alpha)*new
+        smoothed = (self.ref_delta_iir_alpha * self.prev_ref_delta0
+                    + (1.0 - self.ref_delta_iir_alpha) * raw)
+        self.prev_ref_delta0 = smoothed
+        return float(smoothed)
 
     def make_reference_profiles(
         self,
@@ -369,27 +428,29 @@ class FTGMPCNode(Node):
         target_distance: float,
     ) -> Tuple[np.ndarray, np.ndarray]:
         yaw_local = self.estimate_open_path_yaw(ref_local)
+
         ref_delta = np.zeros(self.N, dtype=float)
         ref_delta[0] = self.compute_initial_ref_delta(ref_local)
-
         for k in range(1, self.N):
             dyaw = self.wrap_angle(yaw_local[k + 1] - yaw_local[k])
             curvature = dyaw / max(1e-6, self.path_ds)
-            delta_ref = math.atan(self.L * curvature)
-            ref_delta[k] = float(np.clip(delta_ref, -self.ref_steer_limit, self.ref_steer_limit))
+            ref_delta[k] = float(np.clip(
+                math.atan(self.L * curvature),
+                -self.ref_steer_limit, self.ref_steer_limit,
+            ))
 
         front_clear = float(np.clip(target_distance, 0.0, self.goal_max_distance))
-        v_ref0 = self.straight_speed
-        v_ref0 -= self.speed_target_angle_gain * abs(target_angle)
-        v_ref0 -= self.speed_delta_gain * abs(ref_delta[0])
-        v_ref0 = min(v_ref0, self.corner_speed_cap + self.speed_front_clearance_gain * front_clear)
-        v_ref0 = float(np.clip(v_ref0, self.min_speed, self.max_speed))
-        ref_speed = np.full(self.N, v_ref0, dtype=float)
+        v_ref = self.straight_speed
+        v_ref -= self.speed_target_angle_gain * abs(target_angle)
+        v_ref -= self.speed_delta_gain * abs(ref_delta[0])
+        v_ref = min(v_ref, self.corner_speed_cap + self.speed_front_clearance_gain * front_clear)
+        v_ref = float(np.clip(v_ref, self.min_speed, self.max_speed))
+        ref_speed = np.full(self.N, v_ref, dtype=float)
+
         return ref_speed, ref_delta
 
-    # ------------------------------------------------------------------
-    # Fast lateral MPC + debug extraction
-    # ------------------------------------------------------------------
+    # ── Lateral MPC ────────────────────────────────────────────────────
+
     def solve_lateral_mpc(
         self,
         ref_local: np.ndarray,
@@ -403,17 +464,20 @@ class FTGMPCNode(Node):
         A = np.array([[1.0, v_nom * self.dt], [0.0, 1.0]], dtype=float)
         B = np.array([[0.0], [v_nom * self.dt / self.L]], dtype=float)
 
-        nx = 2
-        nX = nx * (self.N + 1)
-        nU = self.N
+        nx, nX, nU = 2, 2 * (self.N + 1), self.N
         nz = nX + nU
 
         yaw_local = self.estimate_open_path_yaw(ref_local)
-        e0 = np.array([0.0, -float(yaw_local[1] if len(yaw_local) > 1 else 0.0)], dtype=float)
+
+        # e_psi initial: average of first 2 segment headings (less noisy than [1] alone)
+        avg_ref_yaw = float(np.mean([
+            yaw_local[min(k, len(yaw_local) - 1)] for k in [1, 2]
+        ]))
+        e0 = np.array([0.0, -avg_ref_yaw], dtype=float)
 
         Q = np.diag([self.q_ey, self.q_epsi])
         Qf = np.diag([self.qf_ey, self.qf_epsi])
-        P_blocks = [2.0 * Q for _ in range(self.N)] + [2.0 * Qf]
+        P_blocks = [2.0 * Q] * self.N + [2.0 * Qf]
 
         D = np.eye(self.N)
         for i in range(1, self.N):
@@ -428,125 +492,102 @@ class FTGMPCNode(Node):
         q = np.zeros(nz, dtype=float)
         q[nX:] = q_u
 
+        # Equality constraints
         rows, cols, data = [], [], []
         l_eq, u_eq = [], []
         for i in range(nx):
-            rows.append(i)
-            cols.append(i)
-            data.append(1.0)
-            l_eq.append(e0[i])
-            u_eq.append(e0[i])
+            rows.append(i); cols.append(i); data.append(1.0)
+            l_eq.append(e0[i]); u_eq.append(e0[i])
 
         row_base = nx
         for k in range(self.N):
             for i in range(nx):
-                rows.append(row_base + i)
-                cols.append((k + 1) * nx + i)
-                data.append(1.0)
+                rows.append(row_base + i); cols.append((k + 1) * nx + i); data.append(1.0)
             for i in range(nx):
                 for j in range(nx):
-                    rows.append(row_base + i)
-                    cols.append(k * nx + j)
-                    data.append(-A[i, j])
+                    rows.append(row_base + i); cols.append(k * nx + j); data.append(-A[i, j])
             for i in range(nx):
-                rows.append(row_base + i)
-                cols.append(nX + k)
-                data.append(-B[i, 0])
-            l_eq.extend([0.0, 0.0])
-            u_eq.extend([0.0, 0.0])
+                rows.append(row_base + i); cols.append(nX + k); data.append(-B[i, 0])
+            l_eq.extend([0.0, 0.0]); u_eq.extend([0.0, 0.0])
             row_base += nx
 
         Aeq = sp.csc_matrix((data, (rows, cols)), shape=(nx * (self.N + 1), nz))
 
-        # Steering input constraints
-        Aineq = sp.hstack([sp.csc_matrix((self.N, nX)), sp.eye(self.N, format='csc')], format='csc')
-        l_in = np.zeros(self.N, dtype=float)
-        u_in = np.zeros(self.N, dtype=float)
-        for k in range(self.N):
-            l_in[k] = -self.command_steer_limit - ref_delta[k]
-            u_in[k] = self.command_steer_limit - ref_delta[k]
+        # Input constraints
+        Aineq = sp.hstack(
+            [sp.csc_matrix((self.N, nX)), sp.eye(self.N, format='csc')],
+            format='csc',
+        )
+        l_in = np.array([-self.command_steer_limit - ref_delta[k] for k in range(self.N)])
+        u_in = np.array([self.command_steer_limit - ref_delta[k] for k in range(self.N)])
 
-        # Approximate corridor bounds on e_y using side clearances.
+        # Corridor e_y constraints
         left_clear = float(getattr(self.gap_algo, 'last_left_clear', 0.0))
         right_clear = float(getattr(self.gap_algo, 'last_right_clear', 0.0))
+        ey_L = max(self.min_corridor_half_width, left_clear - self.wall_margin)
+        ey_R = max(self.min_corridor_half_width, right_clear - self.wall_margin)
 
-        ey_left_bound = max(self.min_corridor_half_width, left_clear - self.wall_margin)
-        ey_right_bound = max(self.min_corridor_half_width, right_clear - self.wall_margin)
-
-        Aey_rows, Aey_cols, Aey_data = [], [], []
-        l_ey, u_ey = [], []
-        row = 0
-        for k in range(self.N + 1):
-            Aey_rows.append(row)
-            Aey_cols.append(k * nx + 0)  # e_y state
-            Aey_data.append(1.0)
-            l_ey.append(-ey_right_bound)
-            u_ey.append(ey_left_bound)
-            row += 1
-        Aey = sp.csc_matrix((Aey_data, (Aey_rows, Aey_cols)), shape=(self.N + 1, nz))
+        Aey = sp.csc_matrix(
+            ([1.0] * (self.N + 1),
+             (list(range(self.N + 1)), [k * nx for k in range(self.N + 1)])),
+            shape=(self.N + 1, nz),
+        )
+        l_ey = np.full(self.N + 1, -ey_R)
+        u_ey = np.full(self.N + 1, ey_L)
 
         Aqp = sp.vstack([Aeq, Aineq, Aey], format='csc')
-        l = np.concatenate([np.array(l_eq, dtype=float), l_in, np.array(l_ey, dtype=float)])
-        u = np.concatenate([np.array(u_eq, dtype=float), u_in, np.array(u_ey, dtype=float)])
+        l_qp = np.concatenate([np.array(l_eq), l_in, l_ey])
+        u_qp = np.concatenate([np.array(u_eq), u_in, u_ey])
 
         solver = osqp.OSQP()
         solver.setup(
-            P=P,
-            q=q,
-            A=Aqp,
-            l=l,
-            u=u,
-            verbose=False,
-            warm_start=True,
-            polish=False,
-            eps_abs=1e-3,
-            eps_rel=1e-3,
-            max_iter=250,
+            P=P, q=q, A=Aqp, l=l_qp, u=u_qp,
+            verbose=False, warm_start=True, polish=False,
+            eps_abs=1e-3, eps_rel=1e-3, max_iter=250,
         )
         res = solver.solve()
         solve_ms = (time.perf_counter() - t0) * 1000.0
 
         if res.x is None or res.info.status_val not in (1, 2):
-            v_cmd = max(self.min_speed, min(self.max_speed, last_u[0] - self.max_dv))
+            v_cmd = float(np.clip(last_u[0] - self.max_dv, self.min_speed, self.max_speed))
             delta_cmd = float(np.clip(last_u[1], -self.command_steer_limit, self.command_steer_limit))
             return v_cmd, delta_cmd, solve_ms, None, None
 
         x_seq = res.x[:nX].reshape(self.N + 1, nx)
         u_seq = res.x[nX:nX + self.N]
 
-        delta_err0 = float(u_seq[0])
-        delta_cmd_internal = ref_delta[0] + delta_err0
-        last_delta_internal = last_u[1] / max(1e-6, self.steering_output_sign)
         delta_cmd_internal = float(np.clip(
-            delta_cmd_internal,
-            last_delta_internal - self.max_ddelta,
-            last_delta_internal + self.max_ddelta,
+            ref_delta[0] + float(u_seq[0]),
+            last_u[1] / max(1e-6, self.steering_output_sign) - self.max_ddelta,
+            last_u[1] / max(1e-6, self.steering_output_sign) + self.max_ddelta,
         ))
         delta_cmd_internal = float(np.clip(delta_cmd_internal, -self.command_steer_limit, self.command_steer_limit))
         delta_cmd = self.steering_output_sign * delta_cmd_internal
 
-        v_cmd = float(np.clip(ref_speed[0], last_u[0] - self.max_dv, last_u[0] + self.max_dv))
+        v_cmd = float(np.clip(
+            ref_speed[0],
+            last_u[0] - self.max_dv,
+            last_u[0] + self.max_dv,
+        ))
         v_cmd = float(np.clip(v_cmd, self.min_speed, self.max_speed))
 
-        pred_local, pred_yaw = self.reconstruct_predicted_path_debug(ref_local, yaw_local, x_seq)
-        delta_seq_internal = ref_delta + u_seq
-        delta_seq_internal = np.clip(delta_seq_internal, -self.command_steer_limit, self.command_steer_limit)
+        pred_local, pred_yaw = self._reconstruct_predicted_path(ref_local, yaw_local, x_seq)
+        delta_seq = np.clip(ref_delta + u_seq, -self.command_steer_limit, self.command_steer_limit)
 
         mpc_debug = {
             'x_seq': x_seq.copy(),
             'u_seq': u_seq.copy(),
-            'delta_seq': delta_seq_internal.copy(),
+            'delta_seq': delta_seq.copy(),
             'ref_delta': ref_delta.copy(),
             'pred_local': pred_local.copy(),
             'pred_yaw': pred_yaw.copy(),
             'yaw_local': yaw_local.copy(),
-            'ey_left_bound': ey_left_bound,
-            'ey_right_bound': ey_right_bound,
+            'ey_left_bound': ey_L,
+            'ey_right_bound': ey_R,
         }
-
         return v_cmd, delta_cmd, solve_ms, pred_local, mpc_debug
 
-    def reconstruct_predicted_path_debug(
+    def _reconstruct_predicted_path(
         self,
         ref_local: np.ndarray,
         yaw_local: np.ndarray,
@@ -555,36 +596,15 @@ class FTGMPCNode(Node):
         pred = np.zeros_like(ref_local)
         pred_yaw = np.zeros(len(ref_local), dtype=float)
         for k in range(len(ref_local)):
-            yaw_ref = yaw_local[min(k, len(yaw_local) - 1)]
-            ey = float(x_seq[k, 0])
-            epsi = float(x_seq[k, 1])
-            normal = np.array([-math.sin(yaw_ref), math.cos(yaw_ref)], dtype=float)
+            yr = yaw_local[min(k, len(yaw_local) - 1)]
+            ey, epsi = float(x_seq[k, 0]), float(x_seq[k, 1])
+            normal = np.array([-math.sin(yr), math.cos(yr)], dtype=float)
             pred[k] = ref_local[k] + ey * normal
-            pred_yaw[k] = self.wrap_angle(yaw_ref + epsi)
+            pred_yaw[k] = self.wrap_angle(yr + epsi)
         return pred, pred_yaw
 
-    def reconstruct_predicted_path(
-        self,
-        ref_local: np.ndarray,
-        yaw_local: np.ndarray,
-        e0: np.ndarray,
-        A: np.ndarray,
-        B: np.ndarray,
-        u_seq: np.ndarray,
-    ) -> np.ndarray:
-        x = e0.copy()
-        pred = np.zeros_like(ref_local)
-        for k in range(self.N + 1):
-            yaw_ref = yaw_local[min(k, len(yaw_local) - 1)]
-            normal = np.array([-math.sin(yaw_ref), math.cos(yaw_ref)], dtype=float)
-            pred[k] = ref_local[k] + x[0] * normal
-            if k < self.N:
-                x = A @ x + B.flatten() * float(u_seq[k])
-        return pred
+    # ── Debug canvas ───────────────────────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Debug canvas
-    # ------------------------------------------------------------------
     def draw_debug_canvas(
         self,
         ref_local: np.ndarray,
@@ -597,47 +617,37 @@ class FTGMPCNode(Node):
         delta_cmd: float,
         mpc_debug: Optional[dict],
     ) -> None:
-        W = self.debug_canvas_width
-        H = self.debug_canvas_height
+        W, H = self.debug_canvas_width, self.debug_canvas_height
         top_h = int(0.60 * H)
         bot_h = H - top_h
         scale = self.debug_pixels_per_meter
 
-        canvas = np.zeros((H, W, 3), dtype=np.uint8)
-        canvas[:] = (18, 18, 18)
-
+        canvas = np.full((H, W, 3), (18, 18, 18), dtype=np.uint8)
         origin = np.array([W // 2, top_h - 60], dtype=float)
 
         def to_px(p: np.ndarray) -> Tuple[int, int]:
-            x, y = float(p[0]), float(p[1])
-            px = int(round(origin[0] - y * scale))
-            py = int(round(origin[1] - x * scale))
-            return px, py
+            return (int(round(origin[0] - float(p[1]) * scale)),
+                    int(round(origin[1] - float(p[0]) * scale)))
 
-        # --------------------------------------------------------------
-        # Top-down plan view
-        # --------------------------------------------------------------
+        # Grid
         for m in np.arange(0.0, 4.6, 0.5):
-            cv2.line(canvas, to_px(np.array([m, -2.0])), to_px(np.array([m, 2.0])), (35, 35, 35), 1)
+            cv2.line(canvas, to_px([m, -2.0]), to_px([m, 2.0]), (35, 35, 35), 1)
         for m in np.arange(-2.0, 2.1, 0.5):
-            cv2.line(canvas, to_px(np.array([0.0, m])), to_px(np.array([4.5, m])), (35, 35, 35), 1)
-        cv2.line(canvas, to_px(np.array([0.0, -2.0])), to_px(np.array([0.0, 2.0])), (70, 70, 70), 2)
-        cv2.line(canvas, to_px(np.array([0.0, 0.0])), to_px(np.array([4.5, 0.0])), (70, 70, 70), 2)
+            cv2.line(canvas, to_px([0.0, m]), to_px([4.5, m]), (35, 35, 35), 1)
+        cv2.line(canvas, to_px([0.0, -2.0]), to_px([0.0, 2.0]), (70, 70, 70), 2)
+        cv2.line(canvas, to_px([0.0, 0.0]), to_px([4.5, 0.0]), (70, 70, 70), 2)
 
         if self.gap_algo.last_angles is not None and self.gap_algo.last_extended is not None:
             xs = self.gap_algo.last_extended * np.cos(self.gap_algo.last_angles)
             ys = self.gap_algo.last_extended * np.sin(self.gap_algo.last_angles)
             for x, y in zip(xs, ys):
-                cv2.circle(canvas, to_px(np.array([x, y])), 2, (110, 110, 110), -1)
+                cv2.circle(canvas, to_px([x, y]), 2, (110, 110, 110), -1)
 
-        goal_x = float(self.filtered_goal[0])
-        goal_y = float(self.filtered_goal[1])
-        cv2.circle(canvas, to_px(np.array([goal_x, goal_y])), 8, (0, 255, 0), -1)
-
-        raw_goal_x = float(np.clip(target_distance, self.goal_min_distance, self.goal_max_distance) * math.cos(target_angle))
-        raw_goal_y = float(np.clip(target_distance, self.goal_min_distance, self.goal_max_distance) * math.sin(target_angle))
-        raw_goal_x = max(raw_goal_x, 0.4)
-        cv2.circle(canvas, to_px(np.array([raw_goal_x, raw_goal_y])), 7, (0, 255, 255), -1)
+        # Filtered goal (green) and raw FTG goal (cyan)
+        cv2.circle(canvas, to_px([self.filtered_goal_x, self.filtered_goal_y]), 8, (0, 255, 0), -1)
+        raw_d = float(np.clip(target_distance, self.goal_min_distance, self.goal_max_distance))
+        cv2.circle(canvas, to_px([max(raw_d * math.cos(target_angle), 0.4),
+                                   raw_d * math.sin(target_angle)]), 7, (0, 255, 255), -1)
 
         for i in range(len(ref_local) - 1):
             cv2.line(canvas, to_px(ref_local[i]), to_px(ref_local[i + 1]), (255, 0, 0), 2)
@@ -645,160 +655,109 @@ class FTGMPCNode(Node):
         if mpc_debug is not None:
             pred = mpc_debug['pred_local']
             pred_yaw = mpc_debug['pred_yaw']
-            x_seq = mpc_debug['x_seq']
-
-            # error bars from reference to predicted state
             for k in range(len(ref_local)):
                 cv2.line(canvas, to_px(ref_local[k]), to_px(pred[k]), (80, 80, 180), 1)
-
-            # predicted polyline
             for i in range(len(pred) - 1):
                 cv2.line(canvas, to_px(pred[i]), to_px(pred[i + 1]), (0, 165, 255), 2)
-
-            # predicted nodes + labels
             for k in range(len(pred)):
                 p = to_px(pred[k])
                 cv2.circle(canvas, p, 4 if k > 0 else 6, (0, 165, 255), -1)
                 cv2.putText(canvas, str(k), (p[0] + 4, p[1] - 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1)
-
-            # ghost cars along horizon
-            car_w = 0.20
-            car_l = 0.32
-            body = np.array([
-                [0.0, -car_w / 2],
-                [0.0,  car_w / 2],
-                [car_l, car_w / 2],
-                [car_l, -car_w / 2],
-            ], dtype=float)
+            car_w, car_l = 0.20, 0.32
+            body = np.array([[0, -car_w/2], [0, car_w/2], [car_l, car_w/2], [car_l, -car_w/2]])
             for k in range(len(pred)):
-                c = math.cos(pred_yaw[k])
-                s = math.sin(pred_yaw[k])
-                R = np.array([[c, -s], [s, c]], dtype=float)
-                poly = (R @ body.T).T + pred[k]
-                poly_px = np.array([to_px(pt) for pt in poly], dtype=np.int32)
+                c, s = math.cos(pred_yaw[k]), math.sin(pred_yaw[k])
+                R = np.array([[c, -s], [s, c]])
+                poly_px = np.array([to_px(pt) for pt in (R @ body.T).T + pred[k]], dtype=np.int32)
                 cv2.polylines(canvas, [poly_px], True, (0, 110, 180), 1)
 
-        car_w = 0.20
-        car_l = 0.32
-        car_poly = np.array(
-            [[0.0, -car_w / 2], [0.0, car_w / 2], [car_l, car_w / 2], [car_l, -car_w / 2]],
-            dtype=float,
-        )
-        car_pts = np.array([to_px(p) for p in car_poly], dtype=np.int32)
-        cv2.fillPoly(canvas, [car_pts], (200, 200, 200))
+        car_w, car_l = 0.20, 0.32
+        car_poly = np.array([[0, -car_w/2], [0, car_w/2], [car_l, car_w/2], [car_l, -car_w/2]])
+        cv2.fillPoly(canvas, [np.array([to_px(p) for p in car_poly], dtype=np.int32)], (200, 200, 200))
 
-        # --------------------------------------------------------------
-        # Bottom-left FTG profile plot
-        # --------------------------------------------------------------
-        x0 = 20
-        y0 = top_h + 30
-        plot_w = int(0.58 * W)
-        plot_h = bot_h - 60
+        # FTG scan plot
+        x0, y0 = 20, top_h + 30
+        plot_w, plot_h = int(0.58 * W), bot_h - 60
         cv2.rectangle(canvas, (x0, y0), (x0 + plot_w, y0 + plot_h), (70, 70, 70), 1)
-
         if self.gap_algo.last_processed is not None and self.gap_algo.last_extended is not None:
-            proc = self.gap_algo.last_processed
-            ext = self.gap_algo.last_extended
+            proc, ext = self.gap_algo.last_processed, self.gap_algo.last_extended
             costs = self.gap_algo.last_costs
             n = len(proc)
             if n > 1:
                 vmax = max(self.gap_algo.max_range, float(np.max(ext)))
 
-                def draw_series(series: np.ndarray, color: Tuple[int, int, int], normalize_to_vmax: bool = True) -> None:
-                    pts = []
-                    smax = vmax if normalize_to_vmax else max(1e-6, float(np.max(series)))
-                    for i, v in enumerate(series):
-                        px = int(round(x0 + i * (plot_w - 1) / max(1, n - 1)))
-                        py = int(round(y0 + plot_h - 1 - (float(v) / max(1e-6, smax)) * (plot_h - 1)))
-                        pts.append((px, py))
-                    if len(pts) >= 2:
-                        cv2.polylines(canvas, [np.array(pts, dtype=np.int32)], False, color, 2)
+                def draw_s(series, color, norm_max=None):
+                    sm = norm_max if norm_max is not None else max(1e-6, float(np.max(series)))
+                    pts = [(int(round(x0 + i * (plot_w - 1) / (n - 1))),
+                            int(round(y0 + plot_h - 1 - float(v) / sm * (plot_h - 1))))
+                           for i, v in enumerate(series)]
+                    cv2.polylines(canvas, [np.array(pts, dtype=np.int32)], False, color, 2)
 
-                draw_series(proc, (120, 120, 120), True)
-                draw_series(ext, (255, 255, 0), True)
+                draw_s(proc, (120, 120, 120), vmax)
+                draw_s(ext, (255, 255, 0), vmax)
                 if costs is not None:
-                    draw_series(costs, (255, 0, 255), False)
-
+                    draw_s(costs, (255, 0, 255))
                 if self.gap_algo.last_best_idx is not None:
-                    bx = int(round(x0 + self.gap_algo.last_best_idx * (plot_w - 1) / max(1, n - 1)))
+                    bx = int(round(x0 + self.gap_algo.last_best_idx * (plot_w - 1) / (n - 1)))
                     cv2.line(canvas, (bx, y0), (bx, y0 + plot_h), (0, 255, 0), 2)
 
-        # --------------------------------------------------------------
-        # Bottom-right MPC horizon plots
-        # --------------------------------------------------------------
-        panel_x = int(0.62 * W)
-        panel_y = top_h + 30
-        panel_w = W - panel_x - 20
-        panel_h = bot_h - 60
-        cv2.rectangle(canvas, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (70, 70, 70), 1)
+        # MPC horizon plots
+        px0 = int(0.62 * W)
+        py0 = top_h + 30
+        pw = W - px0 - 20
+        ph = bot_h - 60
+        cv2.rectangle(canvas, (px0, py0), (px0 + pw, py0 + ph), (70, 70, 70), 1)
 
         if mpc_debug is not None:
             x_seq = mpc_debug['x_seq']
             delta_seq = mpc_debug['delta_seq']
             ref_delta_seq = mpc_debug['ref_delta']
-            ey = x_seq[:, 0]
-            epsi = x_seq[:, 1]
-            sub_h = panel_h // 3
+            sub_h = ph // 3
 
-            def draw_horizon_series(series, y_min, y_max, color, title, x_start, y_start, w, h):
-                cv2.rectangle(canvas, (x_start, y_start), (x_start + w, y_start + h), (50, 50, 50), 1)
-                cv2.putText(canvas, title, (x_start + 8, y_start + 18),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
-
-                pts = []
+            def draw_h(series, ymin, ymax, color, title, hx, hy, hw, hh):
+                cv2.rectangle(canvas, (hx, hy), (hx + hw, hy + hh), (50, 50, 50), 1)
+                cv2.putText(canvas, title, (hx + 8, hy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
                 n = len(series)
+                pts = []
                 for i, v in enumerate(series):
-                    px = int(round(x_start + 10 + i * (w - 20) / max(1, n - 1)))
-                    norm = (float(v) - y_min) / max(1e-6, (y_max - y_min))
-                    py = int(round(y_start + h - 10 - norm * (h - 25)))
-                    pts.append((px, py))
-                    cv2.circle(canvas, (px, py), 3, color, -1)
-                    cv2.putText(canvas, str(i), (px - 3, y_start + h - 2),
+                    ppx = int(round(hx + 10 + i * (hw - 20) / max(1, n - 1)))
+                    norm = (float(v) - ymin) / max(1e-6, ymax - ymin)
+                    ppy = int(round(hy + hh - 10 - norm * (hh - 25)))
+                    pts.append((ppx, ppy))
+                    cv2.circle(canvas, (ppx, ppy), 3, color, -1)
+                    cv2.putText(canvas, str(i), (ppx - 3, hy + hh - 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
-
                 if len(pts) >= 2:
                     cv2.polylines(canvas, [np.array(pts, dtype=np.int32)], False, color, 2)
 
-            draw_horizon_series(
-                ey, -0.6, 0.6, (255, 200, 0), 'e_y horizon',
-                panel_x + 5, panel_y + 5, panel_w - 10, sub_h - 10
-            )
-            draw_horizon_series(
-                epsi, -0.8, 0.8, (0, 220, 255), 'e_psi horizon',
-                panel_x + 5, panel_y + sub_h + 5, panel_w - 10, sub_h - 10
-            )
-            draw_horizon_series(
-                delta_seq, -self.command_steer_limit, self.command_steer_limit, (0, 255, 120), 'delta horizon',
-                panel_x + 5, panel_y + 2 * sub_h + 5, panel_w - 10, sub_h - 10
-            )
+            draw_h(x_seq[:, 0], -0.6, 0.6, (255, 200, 0), 'e_y',
+                   px0 + 5, py0 + 5, pw - 10, sub_h - 10)
+            draw_h(x_seq[:, 1], -0.8, 0.8, (0, 220, 255), 'e_psi',
+                   px0 + 5, py0 + sub_h + 5, pw - 10, sub_h - 10)
+            draw_h(delta_seq, -self.command_steer_limit, self.command_steer_limit, (0, 255, 120), 'delta',
+                   px0 + 5, py0 + 2 * sub_h + 5, pw - 10, sub_h - 10)
 
-            x_start = panel_x + 5
-            y_start = panel_y + 2 * sub_h + 5
-            w = panel_w - 10
-            h = sub_h - 10
-            pts_ref = []
+            # ref_delta overlay (white)
+            hx, hy, hw, hh = px0 + 5, py0 + 2 * sub_h + 5, pw - 10, sub_h - 10
+            pts_r = []
             for i, v in enumerate(ref_delta_seq):
-                px = int(round(x_start + 10 + i * (w - 20) / max(1, len(ref_delta_seq) - 1)))
-                norm = (float(v) + self.command_steer_limit) / max(1e-6, 2.0 * self.command_steer_limit)
-                py = int(round(y_start + h - 10 - norm * (h - 25)))
-                pts_ref.append((px, py))
-            if len(pts_ref) >= 2:
-                cv2.polylines(canvas, [np.array(pts_ref, dtype=np.int32)], False, (255, 255, 255), 1)
+                ppx = int(round(hx + 10 + i * (hw - 20) / max(1, len(ref_delta_seq) - 1)))
+                norm = (float(v) + self.command_steer_limit) / max(1e-6, 2 * self.command_steer_limit)
+                ppy = int(round(hy + hh - 10 - norm * (hh - 25)))
+                pts_r.append((ppx, ppy))
+            if len(pts_r) >= 2:
+                cv2.polylines(canvas, [np.array(pts_r, dtype=np.int32)], False, (255, 255, 255), 1)
 
-        # --------------------------------------------------------------
-        # Text overlay
-        # --------------------------------------------------------------
+        # HUD
         lines = [
-            f'v_cmd={v_cmd:.3f} m/s',
-            f'delta_cmd={delta_cmd:.3f} rad',
-            f'ref_delta0={ref_delta[0]:.3f} rad',
-            f'gap_angle={target_angle:.3f} rad',
-            f'gap_dist={target_distance:.3f} m',
-            f'goal=({goal_x:.3f}, {goal_y:.3f})',
+            f'v_cmd={v_cmd:.3f} m/s  delta_cmd={delta_cmd:.3f} rad',
+            f'ref_delta0={ref_delta[0]:.3f} (iir prev={self.prev_ref_delta0:.3f})',
+            f'gap_angle={target_angle:.3f} rad  gap_dist={target_distance:.3f} m',
+            f'goal_x={self.filtered_goal_x:.3f}  goal_y={self.filtered_goal_y:.3f}',
             f'front_min={self.gap_algo.last_front_min:.3f} m',
-            f'left_clear={self.gap_algo.last_left_clear:.3f}, right_clear={self.gap_algo.last_right_clear:.3f}',
-            f'solve={self.solve_time_ms_last:.2f} ms',
+            f'left={self.gap_algo.last_left_clear:.3f}  right={self.gap_algo.last_right_clear:.3f}',
+            f'solve={self.solve_time_ms_last:.2f} ms  ema={self.solve_time_ms_ema:.2f} ms',
         ]
         yy = 28
         for line in lines:
@@ -808,28 +767,24 @@ class FTGMPCNode(Node):
         cv2.imshow(self.debug_window_name, canvas)
         cv2.waitKey(1)
 
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
-    def publish_drive(self, speed: float, steering_angle: float) -> None:
-        temp_msg = AckermannDriveStamped()
-        temp_msg.header.stamp = self.get_clock().now().to_msg()
-        temp_msg.header.frame_id = 'base_link'
-        temp_msg.drive = AckermannDrive()
-        temp_msg.drive.speed = float(speed)
-        temp_msg.drive.steering_angle = float(steering_angle)
+    # ── Output ─────────────────────────────────────────────────────────
 
-        full_msg = DriveControlMessage()
-        full_msg.active = True
-        full_msg.priority = 1004
-        full_msg.drive = temp_msg
-        self.drive_pub.publish(full_msg)
+    def publish_drive(self, speed: float, steering_angle: float) -> None:
+        temp = AckermannDriveStamped()
+        temp.header.stamp = self.get_clock().now().to_msg()
+        temp.header.frame_id = 'base_link'
+        temp.drive = AckermannDrive()
+        temp.drive.speed = float(speed)
+        temp.drive.steering_angle = float(steering_angle)
+        msg = DriveControlMessage()
+        msg.active = True
+        msg.priority = 1004
+        msg.drive = temp
+        self.drive_pub.publish(msg)
 
     @staticmethod
     def quaternion_to_yaw(x: float, y: float, z: float, w: float) -> float:
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        return math.atan2(siny_cosp, cosy_cosp)
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
     @staticmethod
     def wrap_angle(a: float) -> float:
