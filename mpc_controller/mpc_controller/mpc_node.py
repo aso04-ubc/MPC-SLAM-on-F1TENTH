@@ -87,7 +87,7 @@ class FTGMPCNode(Node):
                 ('ftg_smoothing_window_size', 10),
                 # Goal filtering — X and Y filtered separately
                 ('goal_min_distance', 0.5),
-                ('goal_max_distance', 2.25),
+                ('goal_max_distance', 2.30),
                 # Alpha for forward distance (keep reactive)
                 ('goal_filter_alpha_x', 0.60),
                 # Alpha for lateral position (main oscillation source — filter harder)
@@ -100,7 +100,7 @@ class FTGMPCNode(Node):
                 ('goal_heading_limit', 0.22),
                 ('path_ds', 0.25),
                 ('path_y_limit', 0.45),
-                ('wall_centering_gain', 1),
+                ('wall_centering_gain', 1.5),
                 ('wall_centering_max', 0.12),
                 ('wall_centering_turn_scale', 1.1),
                 ('wall_margin', 0.20),
