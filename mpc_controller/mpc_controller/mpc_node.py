@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
 """
 ROS 2 F1TENTH FTG + lateral MPC node — v2 stability fix.
-
-Root-cause analysis of oscillations:
-  - goal_filter_alpha=0.6 was INVERTED in original: alpha*goal + (1-alpha)*filtered
-    means 60% raw noisy data. Fixed to conventional: alpha*filtered + (1-alpha)*goal
-    but with alpha=0.75 (not 0.90) to keep reaction time.
-  - goal_y (lateral) is the oscillation driver. goal_x (forward) must stay reactive.
-    We now filter them with SEPARATE alphas.
-  - Cubic spline coefficients a3,a2 change every frame because goal_y is noisy.
-    Fixed by smoothing goal_y with a tight lateral deadband (±0.03 m).
-  - ref_delta[0] was recomputed from scratch each frame with no memory.
-    Fixed with a lightweight single-pole IIR (alpha=0.55) — fast enough, not laggy.
-  - max_ddelta=0.015 was clamping the output every frame, causing clamp-oscillation.
-    Raised to 0.035. The QP cost handles smoothness; the clamp is a safety backstop.
-  - r_delta_err/rd_delta_err ratio was inverted (rate penalized more than magnitude).
-    Fixed: r=500, rd=80.
-  - e_psi initial condition used yaw_local[1] — only 0.22 m ahead, very noisy.
-    Fixed: use average of first 2 segments.
-  - Heavy cross-frame profile EMA removed — that was the sluggishness source.
 """
-
-from __future__ import annotations
 
 import math
 import time
@@ -72,7 +52,6 @@ class FTGMPCNode(Node):
                 ('command_steer_limit', 0.30),
                 ('ref_steer_limit', 0.22),
                 ('max_dv', 0.10),
-                # Raised from 0.015 — clamp is a safety backstop, not a smoother
                 ('max_ddelta', 0.045),
                 ('use_odom_speed', True),
                 ('print_timing_every', 10),
@@ -85,14 +64,11 @@ class FTGMPCNode(Node):
                 ('ftg_car_width', 0.35),
                 ('ftg_disparity_threshold', 0.8),
                 ('ftg_smoothing_window_size', 10),
-                # Goal filtering — X and Y filtered separately
+                # Goal filtering 
                 ('goal_min_distance', 0.5),
                 ('goal_max_distance', 2.30),
-                # Alpha for forward distance (keep reactive)
                 ('goal_filter_alpha_x', 0.60),
-                # Alpha for lateral position (main oscillation source — filter harder)
                 ('goal_filter_alpha_y', 0.60),
-                # Lateral deadband: changes < this are ignored (kills micro-jitter)
                 ('goal_lateral_deadband', 0.03),
                 ('goal_max_step_x', 0.10),
                 ('goal_max_step_y', 0.075),
@@ -111,14 +87,13 @@ class FTGMPCNode(Node):
                 ('speed_target_angle_gain', 1.4),
                 ('speed_delta_gain', 0.50),
                 ('speed_front_clearance_gain', 1.5),
-                # MPC weights — ratio corrected (magnitude >> rate)
+                # MPC weights
                 ('q_ey', 10.0),
                 ('q_epsi', 8.0),
                 ('qf_ey', 14.0),
                 ('qf_epsi', 11.0),
                 ('r_delta_err', 500.0),
                 ('rd_delta_err', 80.0),
-                # ref_delta IIR — lightweight single-pole, keeps reactivity
                 ('ref_delta_iir_alpha', 0.45),
                 # OpenCV debug
                 ('show_opencv_debug', True),
@@ -232,7 +207,7 @@ class FTGMPCNode(Node):
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.debug_window_name, self.debug_canvas_width, self.debug_canvas_height)
 
-        self.get_logger().info('FTG + MPC node started (v2 stability fix).')
+        self.get_logger().info('FTG + MPC node started.')
 
     # ── ROS callbacks ──────────────────────────────────────────────────
 
