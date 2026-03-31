@@ -164,9 +164,12 @@ class YoloHighLevelPlanner(Node):
 
         self._frame_count = 0
         self._last_obstacle_present = None
+        self._last_uturn_detected = None
         self._latest_max_speed = self.clear_max_speed
         self._latest_distance_slowdown = self.clear_distance_slowdown_threshold
         self._latest_obstacle_count = 0
+        self._latest_wall_count = 0
+        self._latest_uturn_detected = False
 
         # Republish at low rate so new subscribers get current tuning.
         self.create_timer(1.0, self._republish_latest_tuning)
@@ -279,12 +282,33 @@ class YoloHighLevelPlanner(Node):
             counts[self._class_name(int(cls_id))] += 1
         return counts
 
+    def _extract_class_count(self, counts, target_class_name):
+        count = 0
+        for class_name, class_count in counts.items():
+            if class_name.lower() == target_class_name:
+                count += int(class_count)
+        return count
+
+    def on_uturn_detected(self, is_uturn, wall_count, counts):
+        """Callback hook for downstream U-turn handling."""
+        del is_uturn
+        del wall_count
+        del counts
+
+    def _invoke_uturn_callback(self, is_uturn, wall_count, counts):
+        try:
+            self.on_uturn_detected(is_uturn, wall_count, counts)
+        except Exception as exc:
+            self.get_logger().error(f'U-turn callback failed: {exc}')
+
     def _draw_overlay(
         self,
         image,
         results,
         max_speed,
         distance_slowdown_threshold,
+        is_uturn,
+        wall_count,
     ):
         overlay = image.copy()
         mask_polygons = None
@@ -383,6 +407,29 @@ class YoloHighLevelPlanner(Node):
             (255, 255, 255),
             2,
         )
+
+        uturn_status = (
+            f'uturn={"YES" if is_uturn else "NO"} wall_count={wall_count}'
+        )
+        cv2.putText(
+            overlay,
+            uturn_status,
+            (10, 58),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 255) if is_uturn else (200, 200, 200),
+            2,
+        )
+        if is_uturn:
+            cv2.putText(
+                overlay,
+                'UTURN',
+                (10, 92),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 0, 255),
+                3,
+            )
         return overlay
 
     def _publish_counts(self, counts, obstacle_count):
@@ -435,10 +482,12 @@ class YoloHighLevelPlanner(Node):
             return
 
         counts = self._extract_detection_counts(result)
-        obstacle_count = 0
-        for class_name, class_count in counts.items():
-            if class_name.lower() == self.obstacle_class_name:
-                obstacle_count += int(class_count)
+        obstacle_count = self._extract_class_count(
+            counts,
+            self.obstacle_class_name,
+        )
+        wall_count = self._extract_class_count(counts, self.wall_class_name)
+        is_uturn = wall_count == 1
 
         obstacle_present = obstacle_count > 0
         if obstacle_present:
@@ -455,6 +504,8 @@ class YoloHighLevelPlanner(Node):
         self._latest_max_speed = max_speed
         self._latest_distance_slowdown = distance_slowdown_threshold
         self._latest_obstacle_count = obstacle_count
+        self._latest_wall_count = wall_count
+        self._latest_uturn_detected = is_uturn
 
         self._publish_tuning(
             max_speed,
@@ -464,10 +515,18 @@ class YoloHighLevelPlanner(Node):
         self._publish_counts(counts, obstacle_count)
 
         self._frame_count += 1
+        uturn_changed = (
+            self._last_uturn_detected is None
+            or is_uturn != self._last_uturn_detected
+        )
+        if uturn_changed:
+            self._invoke_uturn_callback(is_uturn, wall_count, counts)
+
         should_log = (
             self._frame_count % self.log_frequency == 0
             or self._last_obstacle_present is None
             or obstacle_present != self._last_obstacle_present
+            or uturn_changed
         )
         if should_log:
             if counts:
@@ -479,18 +538,22 @@ class YoloHighLevelPlanner(Node):
                 count_str = 'none:0'
             self.get_logger().info(
                 f'Detected counts -> {count_str}; obstacle={obstacle_count}; '
+                f'wall={wall_count}; uturn={is_uturn}; '
                 f'max_speed={max_speed:.2f}; '
                 'distance_slowdown_threshold='
                 f'{distance_slowdown_threshold:.2f}'
             )
 
         self._last_obstacle_present = obstacle_present
+        self._last_uturn_detected = is_uturn
 
         overlay = self._draw_overlay(
             cv_image,
             result,
             max_speed,
             distance_slowdown_threshold,
+            is_uturn,
+            wall_count,
         )
 
         if self.sim:
