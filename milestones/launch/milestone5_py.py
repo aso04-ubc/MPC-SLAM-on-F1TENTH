@@ -5,7 +5,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    sim = False  # Set to False when using a real car
+    sim = True  # Set to False when using a real car
 
     return LaunchDescription([
         DeclareLaunchArgument(

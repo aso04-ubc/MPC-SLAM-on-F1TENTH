@@ -52,6 +52,8 @@ class YoloHighLevelPlanner(Node):
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('log_frequency', 20)
         self.declare_parameter('obstacle_class_name', 'Obstacle')
+        self.declare_parameter('road_class_name', 'road')
+        self.declare_parameter('wall_class_name', 'wall')
 
         # Tuning targets sent to gap_following:
         # [max_speed, distance_slowdown_threshold,
@@ -81,6 +83,17 @@ class YoloHighLevelPlanner(Node):
         self.obstacle_class_name = str(
             self.get_parameter('obstacle_class_name').value
         ).lower()
+        self.road_class_name = str(
+            self.get_parameter('road_class_name').value
+        ).lower()
+        self.wall_class_name = str(
+            self.get_parameter('wall_class_name').value
+        ).lower()
+        self.polygon_boundary_classes = {
+            name
+            for name in (self.road_class_name, self.wall_class_name)
+            if name
+        }
 
         self.clear_max_speed = max(
             0.0,
@@ -274,12 +287,18 @@ class YoloHighLevelPlanner(Node):
         distance_slowdown_threshold,
     ):
         overlay = image.copy()
+        mask_polygons = None
+        if results.masks is not None:
+            mask_polygons = results.masks.xy
+
         if results.boxes is not None and len(results.boxes) > 0:
             boxes = results.boxes.xyxy.cpu().numpy()
             cls_ids = results.boxes.cls.cpu().numpy().astype(int)
             confs = results.boxes.conf.cpu().numpy()
 
-            for box, cls_id, conf in zip(boxes, cls_ids, confs):
+            for det_idx, (box, cls_id, conf) in enumerate(
+                zip(boxes, cls_ids, confs)
+            ):
                 x1, y1, x2, y2 = map(int, box)
                 x1 = max(0, x1)
                 y1 = max(0, y1)
@@ -287,17 +306,64 @@ class YoloHighLevelPlanner(Node):
                 y2 = min(image.shape[0] - 1, y2)
 
                 class_name = self._class_name(int(cls_id))
-                if class_name.lower() == self.obstacle_class_name:
+                class_name_lower = class_name.lower()
+
+                if class_name_lower == self.obstacle_class_name:
                     color = (0, 0, 255)
+                elif class_name_lower == self.road_class_name:
+                    color = (0, 255, 255)
+                elif class_name_lower == self.wall_class_name:
+                    color = (0, 165, 255)
                 else:
                     color = (0, 255, 0)
                 label = f'{class_name} {conf:.2f}'
+                label_origin = (x1, max(18, y1 - 8))
 
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+                polygon_drawn = False
+                if (
+                    class_name_lower in self.polygon_boundary_classes
+                    and mask_polygons is not None
+                    and det_idx < len(mask_polygons)
+                ):
+                    polygon = np.asarray(
+                        mask_polygons[det_idx],
+                        dtype=np.float32,
+                    )
+                    if polygon.ndim == 2 and polygon.shape[0] >= 3:
+                        polygon[:, 0] = np.clip(
+                            polygon[:, 0],
+                            0,
+                            image.shape[1] - 1,
+                        )
+                        polygon[:, 1] = np.clip(
+                            polygon[:, 1],
+                            0,
+                            image.shape[0] - 1,
+                        )
+                        polygon_int = polygon.astype(np.int32).reshape(
+                            (-1, 1, 2)
+                        )
+                        cv2.polylines(
+                            overlay,
+                            [polygon_int],
+                            isClosed=True,
+                            color=color,
+                            thickness=2,
+                        )
+                        min_corner = polygon_int.reshape(-1, 2).min(axis=0)
+                        label_origin = (
+                            max(0, int(min_corner[0])),
+                            max(18, int(min_corner[1]) - 8),
+                        )
+                        polygon_drawn = True
+
+                if not polygon_drawn:
+                    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+
                 cv2.putText(
                     overlay,
                     label,
-                    (x1, max(18, y1 - 8)),
+                    label_origin,
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
                     color,
