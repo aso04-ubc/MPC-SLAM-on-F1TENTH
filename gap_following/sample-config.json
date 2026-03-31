@@ -1,0 +1,48 @@
+/// Do not use this for running code, the comment will break the program
+
+{
+    // Configuration parameters for the gap following autonomous navigation system
+    // Speed control parameters
+    "max_speed": 2.5,                    // Maximum vehicle speed (m/s)
+    "min_speed": 0.0,                    // Minimum vehicle speed (m/s)
+    "max_accel": 2.0,                    // Maximum acceleration (m/s²)
+    "max_decel": 3.5,                    // Maximum deceleration (m/s²)
+
+    // Steering control parameters
+    "MAX_STEERING_ANGLE": 1.4,           // Maximum steering angle (radians)
+    "steering_deadzone": 0.05,           // Deadzone for steering commands
+    "steering_gain": 0.7,                // Gain for steering angle computation
+
+    // PID controller parameters
+    "kp": 0.6,                           // Proportional gain
+    "ki": 0.0,                           // Integral gain
+    "kd": 0.1,                           // Derivative gain
+
+    // LiDAR processing parameters
+    "max_range": 2.5,                    // Maximum LiDAR range to consider (m)
+    "min_safe_distance": 0.25,           // Minimum safe distance from obstacles (m)
+    "car_width": 0.3,                    // Vehicle width for obstacle inflation (m)
+    "disparity_threshold": 0.68,         // Threshold for gap detection
+    "distance_percentile": 0.95,         // Percentile for distance calculations
+
+    // Gap following algorithm parameters
+    "cost_diff": 30,                     // Cost difference threshold for gap selection
+    "speed_gain": 20.0,                  // Gain for speed control based on gap size
+
+    // Signal processing parameters
+    "smoothing_alpha": 0.5,              // Alpha value for exponential smoothing
+    "smoothing_window_size": 10,         // Window size for smoothing operations
+
+    // Side gap detection parameters
+    "side_distance_threshold": 0,        // Threshold for side gap detection
+    "side_steering_nudge": 0.06,         // Steering adjustment for side gaps
+    "side_sector_start_deg": 55.0,       // Start angle for side sector (degrees)
+    "side_sector_end_deg": 100.0,        // End angle for side sector (degrees)
+    "side_distance_percentile": 20.0,    // Percentile for side distance calculations
+
+    // Speed adaptation parameters
+    "distance_slowdown_threshold": 1.7,  // Distance threshold for speed reduction
+
+    // Debugging and monitoring
+    "info_print_frequency": 30           // Frequency for printing debug information (Hz)
+}

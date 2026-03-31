@@ -1,20 +1,18 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>milestones</name>
+  <name>gap_following</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="guanxu@student.ubc.ca">zhou</maintainer>
+  <description>ROS 2 package implementing LiDAR-based gap following for autonomous navigation. Processes laser scan data to identify safe driving corridors and computes steering commands using PID control with obstacle inflation and cost-based gap selection.</description>
+  <maintainer email="augustin.so@gmail.com">poggers</maintainer>
   <license>TODO: License declaration</license>
+
+  <depend>rclpy</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
-
-  <depend>safety</depend>
-  <depend>wall_follow</depend>
-  <depend>lap_counter</depend>
 
   <export>
     <build_type>ament_python</build_type>
