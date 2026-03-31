@@ -8,6 +8,10 @@ from scipy.spatial import KDTree # Required for fast ICP matching
 
 
 # --- Helper Functions ---
+
+def wrap_angle(angle):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
 def get_yaw_from_quat(q):
     """Converts a quaternion to Euler Yaw (Z-axis rotation)."""
     siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -87,7 +91,9 @@ def run_imu_odom_scan_mapping(bag_dir_path, speed=1.0):
     odom_path = []
     fused_path = []
     last_icp_time = 0.0
-    ICP_INTERVAL = 2.0
+    ICP_INTERVAL = 0.5
+    DISTANCE_CORRECTION_MAX = 0
+    YAW_CORRECTION_MAX = 0
 
     last_odom_pos = None
     last_imu_time = None
@@ -105,7 +111,7 @@ def run_imu_odom_scan_mapping(bag_dir_path, speed=1.0):
     has_completed_lap = False
     total_dist_traveled = 0.0
     MIN_LAP_DISTANCE = 5.0  # Meters: Don't reset until we've driven at least this much
-    RESET_THRESHOLD_RADIUS = 1.5  # Meters: How close to (0,0) to trigger reset
+    RESET_THRESHOLD_RADIUS = 0.5  # Meters: How close to (0,0) to trigger reset
 
     map_canvas_float = np.full((WINDOW_SIZE, WINDOW_SIZE, 3), 127.0, dtype=np.float32)
     MAP_UPDATE_RATE = 0.05
@@ -187,38 +193,104 @@ def run_imu_odom_scan_mapping(bag_dir_path, speed=1.0):
                 ranges_valid = ranges[valid]
                 angles_valid = angles[valid]
 
-                # --- 🌟 ICP SCAN MATCHING INTEGRATION 🌟 ---
-                obs_y_px, obs_x_px = np.where(map_canvas_float[:, :, 0] < 50)
 
-                if len(obs_x_px) > 300 and (msg_time_sec - last_icp_time) >= ICP_INTERVAL:
-            
-                    step = max(1, len(obs_x_px) // 1500)
-                    obs_x_px = obs_x_px[::step]
-                    obs_y_px = obs_y_px[::step]
+                # Convert current scan to local points
+                local_angles = angles_valid + math.pi
+                lx = ranges_valid * np.cos(local_angles)
+                ly = ranges_valid * np.sin(local_angles)
+                current_local_points = np.column_stack((lx, ly))
 
-                    map_pts_x = (CY - obs_y_px) / SCALE
-                    map_pts_y = (obs_x_px - CX) / SCALE
-                    map_points = np.column_stack((map_pts_x, map_pts_y))
+                # --- 🌟 STEP A: Save the Start Anchor 🌟 ---
+                if start_anchor_points is None and 0.2 < total_dist_traveled < 1.0:
+                    # 1. Get the current pose when we decide to save
+                    yaw = fused_pose['yaw']
+                    tx, ty = fused_pose['x'], fused_pose['y']
+                    
+                    # 2. Create a rotation matrix for the CURRENT heading
+                    R = np.array([[math.cos(yaw), -math.sin(yaw)],
+                                [math.sin(yaw),  math.cos(yaw)]])
+                    
+                    # 3. Project the local scan into the GLOBAL map frame
+                    # This makes the anchor "Global" so it stays fixed in the world
+                    start_anchor_points = np.dot(current_local_points, R.T) + np.array([tx, ty])
+                    
+                    print(f"⚓ Anchor Saved at Yaw: {math.degrees(yaw):.1f}°. This is now Ground Truth.")
 
-                    local_angles = angles_valid + math.pi
-                    lx = ranges_valid * np.cos(local_angles)
-                    ly = ranges_valid * np.sin(local_angles)
-                    local_points = np.column_stack((lx, ly))
+                # --- 🌟 STEP B: Detect Lap Completion 🌟 ---
+                dist_to_start = math.hypot(fused_pose['x'], fused_pose['y'])
+                
+                # If we are close to start AND have driven a significant distance
+                do_heading_reset = (total_dist_traveled > MIN_LAP_DISTANCE and 
+                                    dist_to_start < RESET_THRESHOLD_RADIUS)
 
-                    corrected_x, corrected_y, corrected_yaw = icp_correct_pose(
-                        local_points, map_points, fused_pose
-                    )
+                # --- 🌟 STEP C: ICP Logic 🌟 ---
+                if (msg_time_sec - last_icp_time) >= ICP_INTERVAL:
+                    
+                    if do_heading_reset:
+                        # MATCH AGAINST ORIGINAL ANCHOR (Heading Reset)
+                        # We ignore the noisy map and force alignment to the first scan
+                        reset_guess = {
+                            'x': fused_pose['x'], 
+                            'y': fused_pose['y'], 
+                            'yaw': 0.0  # Force it to start looking from the original "True North"
+                        }
+                        ref_points = start_anchor_points
+                        print("🔄 LOOP CLOSURE: Resetting heading to Start Anchor...")
+                    else:
+                        # MATCH AGAINST EXISTING MAP (Standard SLAM)
+                        obs_y_px, obs_x_px = np.where(map_canvas_float[:, :, 0] < 50)
+                        if len(obs_x_px) > 300:
+                            map_pts_x = (CY - obs_y_px) / SCALE
+                            map_pts_y = (obs_x_px - CX) / SCALE
+                            ref_points = np.column_stack((map_pts_x, map_pts_y))
+                        else:
+                            ref_points = None
 
-                    delta_dist = math.hypot(corrected_x - fused_pose['x'], corrected_y - fused_pose['y'])
-                    delta_yaw  = abs(corrected_yaw - fused_pose['yaw'])
+                    if ref_points is not None:
+                        # Use higher iterations for the Reset to ensure it "snaps"
+                        iters = 50 if do_heading_reset else 15
+                        corrected_x, corrected_y, corrected_yaw = icp_correct_pose(
+                            current_local_points, ref_points, fused_pose, max_iterations=iters
+                        )
 
-                    if delta_dist < 0.25 and delta_yaw < 0.08:
-                        fused_pose['x']   = corrected_x
-                        fused_pose['y']   = corrected_y
-                        fused_pose['yaw'] = corrected_yaw
+                        # Calculate HOW FAR the ICP wants to teleport the robot
+                        delta_dist = math.hypot(corrected_x - fused_pose['x'], corrected_y - fused_pose['y'])
+                        delta_yaw = abs(corrected_yaw - fused_pose['yaw'])
 
-                    last_icp_time = msg_time_sec  # ✅ always update, even if correction was rejected
-                # --- END ICP ---
+                        if do_heading_reset:
+                            # 1. Calculate the raw (x,y) jump the ICP wants to make
+                            dx = corrected_x - fused_pose['x']
+                            dy = corrected_y - fused_pose['y']
+                            
+                            # 2. Define the "Sideways" axis based on the corrected heading
+                            # If heading is 0 (North), sideways is along the X axis.
+                            side_vector_x = -math.sin(corrected_yaw)
+                            side_vector_y = math.cos(corrected_yaw)
+                            
+                            # 3. Dot Product: Project the jump onto the sideways axis
+                            # This gives us a single number (in meters) of how far left/right to shift
+                            lateral_shift = (dx * side_vector_x) + (dy * side_vector_y)
+                            
+                            # 4. Apply ONLY the lateral shift to the existing pose
+                            fused_pose['x'] += lateral_shift * side_vector_x
+                            fused_pose['y'] += lateral_shift * side_vector_y
+                            
+                            # 5. Apply the full Yaw correction
+                            fused_pose['yaw'] = wrap_angle(corrected_yaw)
+                            
+                            print(f"✅ Loop Closed! Shifted LATERAL: {lateral_shift:.2f}m, Rotated: {delta_yaw:.2f}rad")
+
+                        elif delta_dist < DISTANCE_CORRECTION_MAX and delta_yaw < YAW_CORRECTION_MAX: 
+                            # Normal SLAM: Only accept the fix if it's a TINY correction (< 30cm)
+                            fused_pose['x'], fused_pose['y'], fused_pose['yaw'] = corrected_x, corrected_y, wrap_angle(corrected_yaw)
+                            print(f"Correction Applied: \nDist: {delta_dist:.3f}, Yaw: {delta_yaw:.3f}")
+                        
+                        # (Optional) Uncomment this to see when the code saves you from a bad snap
+                        # else:
+                        #     print(f"⚠️ ICP Rejected: Wanted to jump {delta_dist:.2f}m backwards/forwards.")
+
+                    last_icp_time = msg_time_sec
+                    # --- END ICP ---
                         
                 # Calculate final map points using the (now corrected) pose
                 global_angles = fused_pose['yaw'] + angles_valid + math.pi
@@ -280,4 +352,4 @@ def run_imu_odom_scan_mapping(bag_dir_path, speed=1.0):
     print("💾 地图已保存至: slam_map_final.png")
 
 if __name__ == "__main__":
-    run_imu_odom_scan_mapping('./rosbag2_2026_03_26-15_48_05')
+    run_imu_odom_scan_mapping('./rosbag2_2026_03_12-16_44_43')
