@@ -26,10 +26,10 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import LaserScan
 
-from gap_following.gap_utils import GapFollowAlgo
+from mpc_controller.gap_utils import GapFollowAlgo
 
 
 @dataclass
@@ -49,7 +49,12 @@ class MPCNode(Node):
             parameters=[
                 ('odom_topic', '/ego_racecar/odom'),
                 ('scan_topic', '/scan'),
+                ('race_line_topic', '/race_line/global_path'),
                 ('control_rate_hz', 30.0),
+                ('sim', True),
+                ('use_race_line_planner', True),
+                ('path_stale_timeout_s', 2.0),
+                ('max_path_lateral_error_m', 2.0),
 
                 ('dt', 0.05),
                 ('horizon', 13),
@@ -167,6 +172,11 @@ class MPCNode(Node):
 
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
+        self.race_line_topic = self.get_parameter('race_line_topic').value
+        self.sim = bool(self.get_parameter('sim').value)
+        self.use_race_line_planner = bool(self.get_parameter('use_race_line_planner').value)
+        self.path_stale_timeout_s = float(self.get_parameter('path_stale_timeout_s').value)
+        self.max_path_lateral_error_m = float(self.get_parameter('max_path_lateral_error_m').value)
 
         self.dt = float(self.get_parameter('dt').value)
         self.N = int(self.get_parameter('horizon').value)
@@ -254,6 +264,7 @@ class MPCNode(Node):
         self.slack_weight = float(self.get_parameter('slack_weight').value)
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
+        self.show_opencv_debug = self.show_opencv_debug and self.sim
         self.debug_canvas_width = int(self.get_parameter('debug_canvas_width').value)
         self.debug_canvas_height = int(self.get_parameter('debug_canvas_height').value)
         self.debug_pixels_per_meter = float(self.get_parameter('debug_pixels_per_meter').value)
@@ -275,6 +286,7 @@ class MPCNode(Node):
 
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos)
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos)
+        self.race_line_sub = self.create_subscription(Path, self.race_line_topic, self.race_line_callback, 1)
         self.drive_pub = self.create_publisher(
             DriveControlMessage,
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
@@ -287,6 +299,11 @@ class MPCNode(Node):
 
         self.state: Optional[VehicleState] = None
         self.last_scan: Optional[LaserScan] = None
+        self.race_path_xy: Optional[np.ndarray] = None
+        self.race_path_s: Optional[np.ndarray] = None
+        self.race_path_yaw: Optional[np.ndarray] = None
+        self.race_path_total_s: float = 0.0
+        self.race_path_stamp_s: float = 0.0
 
         self.frame_count = 0
         self.solve_count = 0
@@ -315,6 +332,9 @@ class MPCNode(Node):
         self.last_base_ref = None
         self.last_gap_line = None
         self.last_safe_gap_angle = 0.0
+        self.last_global_path_local = None
+        self.last_path_horizon_local = None
+        self.last_ref_source = 'ftg'
 
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
@@ -345,6 +365,43 @@ class MPCNode(Node):
     def scan_callback(self, msg: LaserScan) -> None:
         self.last_scan = msg
 
+    def race_line_callback(self, msg: Path) -> None:
+        n = len(msg.poses)
+        if n < 8:
+            return
+
+        pts = np.array(
+            [[float(p.pose.position.x), float(p.pose.position.y)] for p in msg.poses],
+            dtype=float,
+        )
+        if pts.shape[0] < 8:
+            return
+
+        step = np.roll(pts, -1, axis=0) - pts
+        ds = np.linalg.norm(step, axis=1)
+        total = float(np.sum(ds))
+        if total < 1.0:
+            return
+
+        s = np.zeros(n, dtype=float)
+        if n > 1:
+            s[1:] = np.cumsum(ds[:-1])
+
+        yaw = np.arctan2(step[:, 1], step[:, 0])
+
+        stamp_s = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        if stamp_s <= 1e-9:
+            stamp_s = self.now_seconds()
+
+        self.race_path_xy = pts
+        self.race_path_s = s
+        self.race_path_yaw = yaw
+        self.race_path_total_s = total
+        self.race_path_stamp_s = stamp_s
+
+    def now_seconds(self) -> float:
+        return float(self.get_clock().now().nanoseconds) * 1e-9
+
     # ──────────────────────────────────────────────────────────────────
     # Main loop
     # ──────────────────────────────────────────────────────────────────
@@ -372,7 +429,16 @@ class MPCNode(Node):
         self.last_gap_angle = float(target_angle)
         self.last_gap_distance = float(target_distance)
 
-        problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
+        problem = None
+        if self.use_race_line_planner:
+            problem = self.build_race_path_problem(target_angle, target_distance, front_min)
+            if problem is not None:
+                self.last_ref_source = 'planner'
+
+        if problem is None:
+            problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
+            self.last_ref_source = 'ftg'
+
         if problem is None:
             v_cmd = 0.0
             delta_cmd = self.steering_output_sign * self.prev_delta_cmd_internal
@@ -410,7 +476,8 @@ class MPCNode(Node):
             f'cmd v={v_cmd:.3f} delta={delta_cmd:.3f}  '
             f'gap_ang={target_angle:.3f} gap_d={target_distance:.3f}  '
             f'front_min={front_min:.3f}  goal=({goal_local[0]:.3f},{goal_local[1]:.3f})  '
-            f'min_width={self.last_min_width:.3f} gap_alpha={self.last_gap_alpha:.3f}'
+            f'min_width={self.last_min_width:.3f} gap_alpha={self.last_gap_alpha:.3f} '
+            f'source={self.last_ref_source}'
         )
 
         self.publish_drive(v_cmd, delta_cmd)
@@ -469,6 +536,169 @@ class MPCNode(Node):
 
         return np.array([self.filtered_goal_x, self.filtered_goal_y], dtype=float)
 
+    def has_fresh_race_path(self) -> bool:
+        if self.race_path_xy is None or self.race_path_s is None or self.race_path_yaw is None:
+            return False
+        age = self.now_seconds() - self.race_path_stamp_s
+        return age <= self.path_stale_timeout_s
+
+    def interpolate_path_xy(self, s_query: np.ndarray) -> np.ndarray:
+        if self.race_path_xy is None or self.race_path_s is None:
+            raise ValueError('Race path is not available')
+
+        s = self.race_path_s
+        xy = self.race_path_xy
+        total = self.race_path_total_s
+        if total <= 1e-6:
+            raise ValueError('Race path length is too small')
+
+        s_wrapped = np.mod(s_query, total)
+        s_ext = np.concatenate([s, [total]])
+        x_ext = np.concatenate([xy[:, 0], [xy[0, 0]]])
+        y_ext = np.concatenate([xy[:, 1], [xy[0, 1]]])
+
+        xq = np.interp(s_wrapped, s_ext, x_ext)
+        yq = np.interp(s_wrapped, s_ext, y_ext)
+        return np.column_stack((xq, yq))
+
+    def global_to_local_xy(self, points_xy: np.ndarray) -> np.ndarray:
+        if self.state is None:
+            raise ValueError('Vehicle state unavailable')
+
+        dx = points_xy[:, 0] - self.state.x
+        dy = points_xy[:, 1] - self.state.y
+        c = math.cos(self.state.yaw)
+        s = math.sin(self.state.yaw)
+
+        x_local = c * dx + s * dy
+        y_local = -s * dx + c * dy
+        return np.column_stack((x_local, y_local))
+
+    def build_race_path_problem(
+        self,
+        target_angle: float,
+        target_distance: float,
+        front_min: float,
+    ) -> Optional[dict]:
+        if self.state is None or not self.has_fresh_race_path():
+            return None
+        if self.race_path_xy is None or self.race_path_s is None or self.race_path_yaw is None:
+            return None
+        if self.race_path_total_s <= 1.0:
+            return None
+
+        pts = self.race_path_xy
+        dxy = pts - np.array([self.state.x, self.state.y], dtype=float)
+        dist = np.hypot(dxy[:, 0], dxy[:, 1])
+        idx = int(np.argmin(dist))
+        if float(dist[idx]) > self.max_path_lateral_error_m:
+            return None
+
+        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - self.state.yaw))
+        if heading_err > 1.8:
+            return None
+
+        lookahead_x = self.lookahead_base
+        lookahead_x += self.lookahead_front_gain * max(0.0, front_min)
+        lookahead_x += self.lookahead_speed_gain * max(0.0, self.state.speed)
+        lookahead_x -= 0.28 * min(1.0, abs(target_angle) / 0.55)
+        lookahead_x = float(np.clip(lookahead_x, 0.65, self.path_x_max))
+
+        s0 = float(self.race_path_s[idx])
+        s_targets = s0 + np.linspace(0.0, lookahead_x, self.N + 1)
+
+        global_horizon = self.interpolate_path_xy(s_targets)
+        local_horizon = self.global_to_local_xy(global_horizon)
+
+        x_ref = local_horizon[:, 0]
+        y_ref = local_horizon[:, 1]
+
+        # Reject path segments that do not project mostly in front of the car.
+        if int(np.sum(x_ref > -0.05)) < max(4, int(0.65 * len(x_ref))):
+            return None
+
+        x_ref = np.maximum.accumulate(x_ref)
+        x_ref = x_ref - x_ref[0]
+        x_ref = np.clip(x_ref, 0.0, self.path_x_max + 0.25)
+        y_ref = self.smooth_1d(y_ref, passes=1)
+
+        psi_ref = self.compute_heading_from_xy(x_ref, y_ref)
+        delta_ref = self.compute_delta_ref(x_ref, y_ref, psi_ref)
+
+        v_target = self.compute_target_speed(
+            target_angle=target_angle,
+            target_distance=target_distance,
+            front_min=front_min,
+            min_width=2.0 * self.path_y_limit,
+            delta_ref=delta_ref,
+        )
+        v_ref = np.full(self.N + 1, v_target, dtype=float)
+
+        corridor = self.estimate_corridor(x_ref)
+        if corridor is not None:
+            y_left_ref, y_right_ref, dense = corridor
+            safe_margin = self.corridor_margin
+            safe_margin += self.margin_speed_gain * max(0.0, self.state.speed)
+            safe_margin += self.margin_steer_gain * abs(self.prev_delta_cmd_internal)
+            safe_margin = float(np.clip(safe_margin, self.corridor_margin, 0.20))
+
+            lower = y_right_ref + safe_margin
+            upper = y_left_ref - safe_margin
+            lower, upper = self.make_bounds_feasible(lower, upper)
+
+            self.last_corridor = {
+                'x_ref': x_ref.copy(),
+                'y_left_ref': y_left_ref.copy(),
+                'y_right_ref': y_right_ref.copy(),
+                'lower': lower.copy(),
+                'upper': upper.copy(),
+                'y_center': 0.5 * (y_left_ref + y_right_ref),
+                'x_dense': dense['x_dense'].copy(),
+                'y_left_dense': dense['y_left_dense'].copy(),
+                'y_right_dense': dense['y_right_dense'].copy(),
+                'x_sector_pts': dense['x_sector_pts'].copy(),
+                'y_sector_pts': dense['y_sector_pts'].copy(),
+                'cluster_centers': np.array(
+                    dense.get('cluster_centers', np.zeros((0, 2), dtype=float)),
+                    dtype=float,
+                ).copy(),
+                'left_cluster_center': None if dense.get('left_cluster_center') is None else np.array(
+                    dense['left_cluster_center'],
+                    dtype=float,
+                ).copy(),
+                'right_cluster_center': None if dense.get('right_cluster_center') is None else np.array(
+                    dense['right_cluster_center'],
+                    dtype=float,
+                ).copy(),
+            }
+        else:
+            half_span = min(self.path_y_limit - 0.05, 0.95)
+            lower = np.clip(y_ref - half_span, -self.path_y_limit, self.path_y_limit)
+            upper = np.clip(y_ref + half_span, -self.path_y_limit, self.path_y_limit)
+            lower, upper = self.make_bounds_feasible(lower, upper)
+            self.last_corridor = None
+
+        z_ref = np.column_stack((x_ref, y_ref, psi_ref, v_ref))
+        u_ref = np.column_stack((np.zeros(self.N, dtype=float), delta_ref))
+
+        self.last_ref = z_ref.copy()
+        self.last_path_horizon_local = np.column_stack((x_ref, y_ref))
+
+        all_local = self.global_to_local_xy(self.race_path_xy)
+        keep = (
+            (all_local[:, 0] >= -1.0)
+            & (all_local[:, 0] <= self.display_x_max)
+            & (np.abs(all_local[:, 1]) <= self.display_y_limit)
+        )
+        self.last_global_path_local = all_local[keep]
+
+        return {
+            'lower': lower,
+            'upper': upper,
+            'z_ref': z_ref,
+            'u_ref': u_ref,
+        }
+
     # Corridor + nominal reference
     def build_local_mpc_problem(
         self,
@@ -477,6 +707,19 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> Optional[dict]:
+        self.last_path_horizon_local = None
+
+        if self.race_path_xy is not None and self.state is not None:
+            all_local = self.global_to_local_xy(self.race_path_xy)
+            keep = (
+                (all_local[:, 0] >= -1.0)
+                & (all_local[:, 0] <= self.display_x_max)
+                & (np.abs(all_local[:, 1]) <= self.display_y_limit)
+            )
+            self.last_global_path_local = all_local[keep]
+        else:
+            self.last_global_path_local = None
+
         safe_gap_angle = self.compute_safe_gap_angle(target_angle, front_min)
         self.last_safe_gap_angle = safe_gap_angle
 
@@ -1270,6 +1513,16 @@ class MPCNode(Node):
             2,
         )
 
+        if self.last_global_path_local is not None and len(self.last_global_path_local) >= 2:
+            pth = np.array(self.last_global_path_local, dtype=float)
+            for i in range(len(pth) - 1):
+                cv2.line(canvas, to_px(pth[i]), to_px(pth[i + 1]), (150, 150, 150), 1)
+
+        if self.last_path_horizon_local is not None and len(self.last_path_horizon_local) >= 2:
+            hor = np.array(self.last_path_horizon_local, dtype=float)
+            for i in range(len(hor) - 1):
+                cv2.line(canvas, to_px(hor[i]), to_px(hor[i + 1]), (255, 255, 80), 2)
+
         if self.gap_algo.last_angles is not None and self.gap_algo.last_extended is not None:
             angles = np.array(self.gap_algo.last_angles, dtype=float)
             ranges = np.array(self.gap_algo.last_extended, dtype=float)
@@ -1475,7 +1728,8 @@ class MPCNode(Node):
             f'min_width={self.last_min_width:.3f} m   gap_alpha={self.last_gap_alpha:.3f}   margin={self.last_safe_margin:.3f}',
             f'left_clear={float(getattr(self.gap_algo, "last_left_clear", 0.0)):.3f}   '
             f'right_clear={float(getattr(self.gap_algo, "last_right_clear", 0.0)):.3f}',
-            f'display_x={self.display_x_max:.1f} planner_x={self.path_x_max:.1f} solve={self.solve_time_ms_last:.2f} ms',
+            f'display_x={self.display_x_max:.1f} planner_x={self.path_x_max:.1f} '
+            f'solve={self.solve_time_ms_last:.2f} ms source={self.last_ref_source}',
         ]
 
         yy = 28
