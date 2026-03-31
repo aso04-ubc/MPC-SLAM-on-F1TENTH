@@ -85,7 +85,7 @@ class LiveMapperNode(Node):
             parameters=[
                 ('sim', True),
                 ('imu_topic', '/sensors/imu/raw'),
-                ('odom_topic', '/ego_racecar/odom'),
+                ('odom_topic', '/odom'),
                 ('scan_topic', '/scan'),
                 ('map_topic', '/mapping/occupancy_grid'),
                 ('pose_topic', '/mapping/fused_pose'),
@@ -104,7 +104,7 @@ class LiveMapperNode(Node):
                 ('imu_gyro_in_degrees', True),
                 ('gyro_scale', 1.0),
                 ('odom_scale', 1.0),
-                ('icp_enabled', True),
+                ('icp_enabled', False),
                 ('icp_interval_s', 0.5),
                 ('icp_max_iterations', 15),
                 ('icp_match_distance_m', 0.30),

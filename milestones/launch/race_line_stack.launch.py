@@ -8,11 +8,15 @@ def generate_launch_description():
     sim = LaunchConfiguration('sim')
     use_race_line_planner = LaunchConfiguration('use_race_line_planner')
     odom_topic = LaunchConfiguration('odom_topic')
+    imu_topic = LaunchConfiguration('imu_topic')
+    scan_topic = LaunchConfiguration('scan_topic')
 
     return LaunchDescription([
         DeclareLaunchArgument('sim', default_value='true'),
         DeclareLaunchArgument('use_race_line_planner', default_value='true'),
         DeclareLaunchArgument('odom_topic', default_value='/odom'),
+        DeclareLaunchArgument('imu_topic', default_value='/sensors/imu/raw'),
+        DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
         Node(
             package='perception_pkg',
@@ -22,12 +26,14 @@ def generate_launch_description():
             parameters=[
                 {'sim': sim},
                 {'odom_topic': odom_topic},
-                {'scan_topic': '/scan'},
-                {'imu_topic': '/sensors/imu/raw'},
+                {'scan_topic': scan_topic},
+                {'imu_topic': imu_topic},
                 {'map_topic': '/mapping/occupancy_grid'},
                 {'pose_topic': '/mapping/fused_pose'},
                 {'map_publish_rate_hz': 2.0},
                 {'pose_publish_rate_hz': 2.0},
+                {'icp_enabled': False},
+                {'show_opencv_debug': True},
             ],
         ),
 
