@@ -352,4 +352,4 @@ def run_imu_odom_scan_mapping(bag_dir_path, speed=1.0):
     print("💾 地图已保存至: slam_map_final.png")
 
 if __name__ == "__main__":
-    run_imu_odom_scan_mapping('./rosbag2_2026_03_12-16_44_43')
+    run_imu_odom_scan_mapping('./rosbag2_2026_03_12-16_45_48')
