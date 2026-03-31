@@ -95,11 +95,30 @@ class LiveMapperNode(Node):
                 ('map_window_size', 1000),
                 ('map_scale_px_per_m', 40.0),
                 ('map_update_rate', 0.05),
+                ('map_update_rate_obstacle', 0.05),
+                ('map_update_rate_free', 0.05),
+                ('virtual_fill_free_boost', 0.25),
+                ('virtual_wall_obstacle_boost', 0.35),
+                ('virtual_fill_close_kernel_px', 7),
                 ('free_thresh', 200),
                 ('occ_thresh', 90),
                 ('scan_max_range_m', 1.0),
                 ('scan_trim_count', 80),
                 ('scan_angle_offset_rad', math.pi),
+                ('track_width_assumption_enabled', True),
+                ('track_width_init_m', 1.0),
+                ('track_width_alpha', 0.97),
+                ('side_angle_center_deg', 90.0),
+                ('side_angle_half_window_deg', 20.0),
+                ('virtual_wall_span_deg', 24.0),
+                ('virtual_wall_num_points', 17),
+                ('virtual_wall_min_m', 0.20),
+                ('virtual_wall_thickness_px', 3),
+                ('virtual_wall_anchor_max_gap_deg', 18.0),
+                ('virtual_wall_smooth_window', 5),
+                ('virtual_wall_blend_alpha', 0.65),
+                ('virtual_wall_max_step_m', 0.08),
+                ('virtual_wall_max_segment_jump_px', 14),
                 ('imu_calibration_frames', 100),
                 ('imu_gyro_in_degrees', True),
                 ('gyro_scale', 1.0),
@@ -129,12 +148,31 @@ class LiveMapperNode(Node):
         self.window_size = int(self.get_parameter('map_window_size').value)
         self.scale_px_per_m = float(self.get_parameter('map_scale_px_per_m').value)
         self.map_update_rate = float(self.get_parameter('map_update_rate').value)
+        self.map_update_rate_obstacle = float(self.get_parameter('map_update_rate_obstacle').value)
+        self.map_update_rate_free = float(self.get_parameter('map_update_rate_free').value)
+        self.virtual_fill_free_boost = float(self.get_parameter('virtual_fill_free_boost').value)
+        self.virtual_wall_obstacle_boost = float(self.get_parameter('virtual_wall_obstacle_boost').value)
+        self.virtual_fill_close_kernel_px = int(self.get_parameter('virtual_fill_close_kernel_px').value)
         self.free_thresh = int(self.get_parameter('free_thresh').value)
         self.occ_thresh = int(self.get_parameter('occ_thresh').value)
 
         self.scan_max_range_m = float(self.get_parameter('scan_max_range_m').value)
         self.scan_trim_count = int(self.get_parameter('scan_trim_count').value)
         self.scan_angle_offset_rad = float(self.get_parameter('scan_angle_offset_rad').value)
+        self.track_width_assumption_enabled = bool(self.get_parameter('track_width_assumption_enabled').value)
+        self.track_width_est_m = float(self.get_parameter('track_width_init_m').value)
+        self.track_width_alpha = float(self.get_parameter('track_width_alpha').value)
+        self.side_angle_center_deg = float(self.get_parameter('side_angle_center_deg').value)
+        self.side_angle_half_window_deg = float(self.get_parameter('side_angle_half_window_deg').value)
+        self.virtual_wall_span_deg = float(self.get_parameter('virtual_wall_span_deg').value)
+        self.virtual_wall_num_points = int(self.get_parameter('virtual_wall_num_points').value)
+        self.virtual_wall_min_m = float(self.get_parameter('virtual_wall_min_m').value)
+        self.virtual_wall_thickness_px = int(self.get_parameter('virtual_wall_thickness_px').value)
+        self.virtual_wall_anchor_max_gap_deg = float(self.get_parameter('virtual_wall_anchor_max_gap_deg').value)
+        self.virtual_wall_smooth_window = int(self.get_parameter('virtual_wall_smooth_window').value)
+        self.virtual_wall_blend_alpha = float(self.get_parameter('virtual_wall_blend_alpha').value)
+        self.virtual_wall_max_step_m = float(self.get_parameter('virtual_wall_max_step_m').value)
+        self.virtual_wall_max_segment_jump_px = int(self.get_parameter('virtual_wall_max_segment_jump_px').value)
 
         self.imu_calibration_frames = int(self.get_parameter('imu_calibration_frames').value)
         self.imu_gyro_in_degrees = bool(self.get_parameter('imu_gyro_in_degrees').value)
@@ -262,6 +300,10 @@ class LiveMapperNode(Node):
         if len(ranges_valid) < 8:
             return
 
+        synth_mask = np.zeros(len(ranges_valid), dtype=bool)
+        if self.track_width_assumption_enabled:
+            angles_valid, ranges_valid, synth_mask = self.apply_virtual_wall_completion(angles_valid, ranges_valid)
+
         local_angles = angles_valid + self.scan_angle_offset_rad
         lx = ranges_valid * np.cos(local_angles)
         ly = ranges_valid * np.sin(local_angles)
@@ -311,6 +353,7 @@ class LiveMapperNode(Node):
 
         sx = sx[in_bounds]
         sy = sy[in_bounds]
+        synth_mask = synth_mask[in_bounds]
 
         if len(sx) == 0:
             return
@@ -320,13 +363,270 @@ class LiveMapperNode(Node):
 
         current_scan = np.full((self.window_size, self.window_size), 127, dtype=np.uint8)
         cv2.fillPoly(current_scan, [polygon], 255)
-        current_scan[sy, sx] = 0
+        real_pts_mask = ~synth_mask
+        if np.any(real_pts_mask):
+            current_scan[sy[real_pts_mask], sx[real_pts_mask]] = 0
 
-        active = current_scan != 127
-        self.map_canvas_float[active] = (
-            self.map_canvas_float[active] * (1.0 - self.map_update_rate)
-            + current_scan[active].astype(np.float32) * self.map_update_rate
+        synth_line_mask = np.zeros((self.window_size, self.window_size), dtype=np.uint8)
+
+        # Strengthen virtual boundary continuity by drawing a thick connected wall.
+        if int(np.sum(synth_mask)) >= 2:
+            synth_pts = pts[synth_mask]
+            thick = max(1, self.virtual_wall_thickness_px)
+            self.draw_segmented_polyline(
+                image=current_scan,
+                points=synth_pts,
+                color=0,
+                thickness=thick,
+            )
+            self.draw_segmented_polyline(
+                image=synth_line_mask,
+                points=synth_pts,
+                color=255,
+                thickness=thick,
+            )
+
+            close_k = max(3, self.virtual_fill_close_kernel_px)
+            if (close_k % 2) == 0:
+                close_k += 1
+            close_kernel = np.ones((close_k, close_k), dtype=np.uint8)
+
+            # Close small free-space holes around the inferred boundary so the lane interior becomes continuous.
+            free_layer = np.where(current_scan == 255, 255, 0).astype(np.uint8)
+            free_layer = cv2.morphologyEx(free_layer, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+            current_scan[free_layer > 0] = 255
+            current_scan[synth_line_mask > 0] = 0
+
+        free_mask = current_scan == 255
+        obs_mask = current_scan == 0
+
+        free_rate = self.map_update_rate_free
+        if int(np.sum(synth_mask)) >= 2:
+            free_rate = max(free_rate, self.virtual_fill_free_boost)
+
+        if np.any(free_mask):
+            self.map_canvas_float[free_mask] = (
+                self.map_canvas_float[free_mask] * (1.0 - free_rate)
+                + 255.0 * free_rate
+            )
+
+        if np.any(obs_mask):
+            obs_rate = max(self.map_update_rate_obstacle, self.map_update_rate)
+            if int(np.sum(synth_mask)) >= 2:
+                obs_rate = max(obs_rate, self.virtual_wall_obstacle_boost)
+            self.map_canvas_float[obs_mask] = (
+                self.map_canvas_float[obs_mask] * (1.0 - obs_rate)
+                + 0.0 * obs_rate
+            )
+
+    def side_distance(self, angles: np.ndarray, ranges: np.ndarray, side_sign: int) -> Optional[float]:
+        center = math.radians(self.side_angle_center_deg) * float(side_sign)
+        half = math.radians(self.side_angle_half_window_deg)
+        mask = np.abs(angles - center) <= half
+        if int(np.sum(mask)) < 4:
+            return None
+        vals = ranges[mask]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) < 4:
+            return None
+        return float(np.median(vals))
+
+    def draw_segmented_polyline(
+        self,
+        image: np.ndarray,
+        points: np.ndarray,
+        color: int,
+        thickness: int,
+    ) -> None:
+        if len(points) < 2:
+            return
+
+        jump_px = float(max(2, self.virtual_wall_max_segment_jump_px))
+        start = 0
+        for idx in range(len(points) - 1):
+            step = float(np.linalg.norm(points[idx + 1].astype(float) - points[idx].astype(float)))
+            if step > jump_px:
+                segment = points[start:idx + 1]
+                if len(segment) >= 2:
+                    cv2.polylines(
+                        image,
+                        [segment.reshape(-1, 1, 2)],
+                        isClosed=False,
+                        color=color,
+                        thickness=thickness,
+                    )
+                start = idx + 1
+
+        tail = points[start:]
+        if len(tail) >= 2:
+            cv2.polylines(
+                image,
+                [tail.reshape(-1, 1, 2)],
+                isClosed=False,
+                color=color,
+                thickness=thickness,
+            )
+
+    def apply_virtual_wall_completion(
+        self,
+        angles: np.ndarray,
+        ranges: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        base_mask = np.zeros(len(angles), dtype=bool)
+        # 1) Update track width estimate when both side walls are observed.
+        left_d = self.side_distance(angles, ranges, side_sign=1)
+        right_d = self.side_distance(angles, ranges, side_sign=-1)
+        observed_cutoff = 0.92 * self.scan_max_range_m
+
+        left_obs = left_d is not None and left_d < observed_cutoff
+        right_obs = right_d is not None and right_d < observed_cutoff
+
+        if left_obs and right_obs:
+            measured_w = float(np.clip(left_d + right_d, 0.6, 3.5))
+            self.track_width_est_m = (
+                self.track_width_alpha * self.track_width_est_m
+                + (1.0 - self.track_width_alpha) * measured_w
+            )
+            return angles, ranges, base_mask
+
+        # 2) If one wall is missing, synthesize the opposite wall from width assumption.
+        missing_sign = 0
+        known_d = None
+        if left_obs and not right_obs:
+            missing_sign = -1
+            known_d = left_d
+        elif right_obs and not left_obs:
+            missing_sign = 1
+            known_d = right_d
+
+        if missing_sign == 0 or known_d is None:
+            return angles, ranges, base_mask
+
+        virtual_d = float(np.clip(
+            self.track_width_est_m - known_d,
+            self.virtual_wall_min_m,
+            self.scan_max_range_m,
+        ))
+
+        center = math.radians(self.side_angle_center_deg) * float(missing_sign)
+        span = math.radians(self.virtual_wall_span_deg)
+        n_pts = max(5, self.virtual_wall_num_points)
+        synthetic_angles = np.linspace(center - 0.5 * span, center + 0.5 * span, n_pts)
+        synthetic_ranges = self.build_smooth_virtual_ranges(
+            angles=angles,
+            ranges=ranges,
+            synthetic_angles=synthetic_angles,
+            base_distance=virtual_d,
+            observed_cutoff=observed_cutoff,
         )
+
+        aug_angles = np.concatenate([angles, synthetic_angles])
+        aug_ranges = np.concatenate([ranges, synthetic_ranges])
+        aug_mask = np.concatenate([np.zeros(len(angles), dtype=bool), np.ones(n_pts, dtype=bool)])
+        order = np.argsort(aug_angles)
+        return aug_angles[order], aug_ranges[order], aug_mask[order]
+
+    def nearest_anchor_distance(
+        self,
+        target_angle: float,
+        angles: np.ndarray,
+        ranges: np.ndarray,
+        observed_cutoff: float,
+    ) -> Optional[float]:
+        if len(angles) == 0:
+            return None
+        idx = int(np.argmin(np.abs(angles - target_angle)))
+        ang_err = abs(float(angles[idx]) - float(target_angle))
+        max_gap = math.radians(self.virtual_wall_anchor_max_gap_deg)
+        r_val = float(ranges[idx])
+        if ang_err > max_gap or not np.isfinite(r_val) or r_val >= observed_cutoff:
+            return None
+        return r_val
+
+    def build_smooth_virtual_ranges(
+        self,
+        angles: np.ndarray,
+        ranges: np.ndarray,
+        synthetic_angles: np.ndarray,
+        base_distance: float,
+        observed_cutoff: float,
+    ) -> np.ndarray:
+        n_pts = len(synthetic_angles)
+        profile = np.full(n_pts, float(base_distance), dtype=float)
+        if n_pts < 3:
+            return profile
+
+        left_anchor = self.nearest_anchor_distance(
+            target_angle=float(synthetic_angles[0]),
+            angles=angles,
+            ranges=ranges,
+            observed_cutoff=observed_cutoff,
+        )
+        right_anchor = self.nearest_anchor_distance(
+            target_angle=float(synthetic_angles[-1]),
+            angles=angles,
+            ranges=ranges,
+            observed_cutoff=observed_cutoff,
+        )
+
+        t = np.linspace(0.0, 1.0, n_pts, dtype=float)
+        if left_anchor is not None:
+            profile += (float(left_anchor) - float(base_distance)) * ((1.0 - t) ** 2)
+        if right_anchor is not None:
+            profile += (float(right_anchor) - float(base_distance)) * (t ** 2)
+
+        # Blend toward any real observed points inside synthetic sector.
+        sec_min = float(np.min(synthetic_angles))
+        sec_max = float(np.max(synthetic_angles))
+        in_sector = (
+            (angles >= sec_min)
+            & (angles <= sec_max)
+            & np.isfinite(ranges)
+            & (ranges < observed_cutoff)
+        )
+        if int(np.sum(in_sector)) >= 2:
+            obs_ang = angles[in_sector]
+            obs_rng = ranges[in_sector]
+            order = np.argsort(obs_ang)
+            obs_ang = obs_ang[order]
+            obs_rng = obs_rng[order]
+            interp_rng = np.interp(
+                synthetic_angles,
+                obs_ang,
+                obs_rng,
+                left=float(obs_rng[0]),
+                right=float(obs_rng[-1]),
+            )
+            alpha = float(np.clip(self.virtual_wall_blend_alpha, 0.0, 1.0))
+            profile = (1.0 - alpha) * profile + alpha * interp_rng
+
+        smooth_w = max(1, int(self.virtual_wall_smooth_window))
+        if smooth_w > 1 and n_pts >= smooth_w:
+            if (smooth_w % 2) == 0:
+                smooth_w += 1
+            if smooth_w == 5:
+                kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=float)
+            else:
+                half = smooth_w // 2
+                ramp = np.arange(1, half + 2, dtype=float)
+                kernel = np.concatenate([ramp, ramp[-2::-1]])
+            kernel /= np.sum(kernel)
+            pad = smooth_w // 2
+            padded = np.pad(profile, (pad, pad), mode='edge')
+            profile = np.convolve(padded, kernel, mode='valid')
+
+        max_step = max(0.01, float(self.virtual_wall_max_step_m))
+        for i in range(1, n_pts):
+            low = profile[i - 1] - max_step
+            high = profile[i - 1] + max_step
+            profile[i] = float(np.clip(profile[i], low, high))
+        for i in range(n_pts - 2, -1, -1):
+            low = profile[i + 1] - max_step
+            high = profile[i + 1] + max_step
+            profile[i] = float(np.clip(profile[i], low, high))
+
+        profile = np.clip(profile, self.virtual_wall_min_m, self.scan_max_range_m)
+        return profile
 
     def publish_pose(self) -> None:
         msg = PoseStamped()

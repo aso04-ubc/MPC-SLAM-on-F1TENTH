@@ -56,9 +56,22 @@ def gray_image_to_occupancy_data(
     if gray.ndim != 2:
         raise ValueError('Expected grayscale image')
 
-    occ_top = np.full(gray.shape, -1, dtype=np.int8)
-    occ_top[gray >= free_thresh] = 0
-    occ_top[gray <= occ_thresh] = 100
+    gray_i = gray.astype(np.int16)
+
+    # Start with a probabilistic mapping so partially observed boundaries are
+    # reflected in occupancy immediately (instead of waiting for hard threshold).
+    occ_prob = np.round((255.0 - gray_i.astype(np.float32)) * (100.0 / 255.0)).astype(np.int16)
+    occ_prob = np.clip(occ_prob, 0, 100)
+
+    # Clamp clear and fully occupied ends for stability.
+    occ_prob[gray_i >= free_thresh] = 0
+    occ_prob[gray_i <= occ_thresh] = 100
+
+    occ_top = occ_prob.astype(np.int8)
+
+    # Preserve untouched unknown canvas around neutral gray.
+    unknown_mask = np.abs(gray_i - 127) <= 5
+    occ_top[unknown_mask] = -1
 
     # ROS OccupancyGrid expects row-major starting at bottom-left.
     occ_bottom = np.flipud(occ_top)
