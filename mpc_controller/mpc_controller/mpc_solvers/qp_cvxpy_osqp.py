@@ -138,7 +138,7 @@ def _map_status(raw_status: str) -> str:
 
 def _fallback_recommended(status: str) -> bool:
     """Check if fallback should be used."""
-    return status not in ('SOLVED',)
+    return status not in ('SOLVED', 'SOLVED_INACCURATE')
 
 
 class QPMPCController:
@@ -174,6 +174,7 @@ class QPMPCController:
                 'status': 'ERROR',
                 'solve_time_ms': 0.0,
                 'iteration_count': 0,
+                'has_solution': False,
                 'fallback_recommended': True,
                 'backend_error': f'{type(exc).__name__}: {exc}',
             }
@@ -253,6 +254,7 @@ class QPMPCController:
                 'status': 'ERROR',
                 'solve_time_ms': solve_time_ms,
                 'iteration_count': 0,
+                'has_solution': False,
                 'fallback_recommended': True,
                 'backend_error': f'{type(exc).__name__}: {exc}',
             }
@@ -260,8 +262,9 @@ class QPMPCController:
 
         status = _map_status(raw_status)
         fallback_recommended = _fallback_recommended(status)
+        has_solution = u_var.value is not None and status not in ('PRIMAL_INFEASIBLE', 'DUAL_INFEASIBLE', 'ERROR')
 
-        if u_var.value is not None and status in ('SOLVED', 'SOLVED_INACCURATE'):
+        if has_solution:
             solution = [
                 [float(u_var.value[input_index, stage]) for input_index in range(self.nu)]
                 for stage in range(self.N)
@@ -279,6 +282,7 @@ class QPMPCController:
             'status': status,
             'solve_time_ms': solve_time_ms,
             'iteration_count': iteration_count,
+            'has_solution': has_solution,
             'fallback_recommended': fallback_recommended,
         }
         return u0, info

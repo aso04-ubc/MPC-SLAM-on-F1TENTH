@@ -85,6 +85,7 @@ def test_solver_returns_backend_error_fallback_when_cvxpy_missing():
 
     assert u0 == [0.1, -0.1]
     assert info['status'] == 'ERROR'
+    assert info['has_solution'] is False
     assert info['fallback_recommended'] is True
     assert 'backend_error' in info
 
@@ -123,4 +124,5 @@ def test_solver_nominal_solve_when_backend_available():
 
     assert len(u0) == 2
     assert info['status'] in ('SOLVED', 'SOLVED_INACCURATE')
+    assert info['has_solution'] is True
     assert info['iteration_count'] >= 0

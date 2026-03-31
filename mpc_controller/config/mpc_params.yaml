@@ -11,11 +11,21 @@ mpc_controller_node:
     a_max: 3.0
     ddelta_max: 1.0
     Q: [20, 10, 2, 1]
+    Q_N: [40, 20, 4, 2]
     R: [1, 10]
     R_delta: [0.1, 5]
     solver_time_budget_ms: 10
+    solver_max_iter: 4000
     soft_constraint_weight: 1000.0
-    reference_mode: constant_speed_placeholder
-    target_speed: 0.0
+    reference_mode: auto
+    path_csv: ''
+    target_speed: 1.5
+    search_window: 15
     odom_timeout_sec: 0.25
     stop_on_invalid_reference: true
+    stop_on_solver_failure: true
+    publish_drive_control: true
+    drive_control_topic: /drive_control
+    command_priority: 700
+    command_active: true
+    min_speed_for_steering_estimate: 0.2

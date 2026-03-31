@@ -9,6 +9,10 @@ def generate_launch_description():
     params_file = LaunchConfiguration('params_file')
     odom_topic = LaunchConfiguration('odom_topic')
     drive_topic = LaunchConfiguration('drive_topic')
+    drive_control_topic = LaunchConfiguration('drive_control_topic')
+    publish_drive_control = LaunchConfiguration('publish_drive_control')
+    reference_mode = LaunchConfiguration('reference_mode')
+    path_csv = LaunchConfiguration('path_csv')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
@@ -27,7 +31,29 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'drive_topic',
             default_value='/mpc/drive',
-            description='Output drive topic remap for the MPC controller.',
+            description='Raw Ackermann output topic remap for the MPC controller.',
+        ),
+        DeclareLaunchArgument(
+            'drive_control_topic',
+            default_value='/drive_control',
+            description='Priority-arbitrated drive command topic.',
+        ),
+        DeclareLaunchArgument(
+            'publish_drive_control',
+            default_value='true',
+            description='Whether to publish DriveControlMessage to the mux chain.',
+        ),
+        DeclareLaunchArgument(
+            'reference_mode',
+            default_value='path_csv',
+            description='Reference source: auto, path_csv, or constant_speed.',
+        ),
+        DeclareLaunchArgument(
+            'path_csv',
+            default_value=PathJoinSubstitution(
+                [FindPackageShare('mpc_controller'), 'config', 'example_centerline.csv']
+            ),
+            description='CSV file that defines the centerline used by the MPC tracker.',
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -42,7 +68,13 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[
                 params_file,
-                {'use_sim_time': use_sim_time},
+                {
+                    'use_sim_time': use_sim_time,
+                    'reference_mode': reference_mode,
+                    'path_csv': path_csv,
+                    'publish_drive_control': publish_drive_control,
+                    'drive_control_topic': drive_control_topic,
+                },
             ],
             remappings=[
                 ('/odom', odom_topic),
