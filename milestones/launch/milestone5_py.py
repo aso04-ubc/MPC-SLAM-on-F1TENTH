@@ -36,6 +36,14 @@ def generate_launch_description():
             parameters=[{'sim': sim}],
         ),
 
+        Node(
+            package='high_level_planner',
+            executable='high_level_planner_node',
+            name='high_level_planner_node_launch',
+            output='screen',
+            parameters=[{'sim': sim}],
+        ),
+
         # Node(
         #     package='lap_counter',
         #     executable='lap_counter_node',

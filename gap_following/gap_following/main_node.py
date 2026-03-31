@@ -34,6 +34,7 @@ from sensor_msgs.msg import LaserScan, Image
 from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from dev_b7_interfaces.msg import DriveControlMessage
+from std_msgs.msg import Float32MultiArray
 
 from gap_following.gap_utils import GapFollowAlgo
 from gap_following.PID_control import PIDControl
@@ -88,6 +89,14 @@ class GapFollowingNode(Node):
         self.drive_pub = self.create_publisher(
             DriveControlMessage,
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
+            10
+        )
+
+        # Dynamic runtime tuning from high-level planner
+        self.dynamic_tune_sub = self.create_subscription(
+            Float32MultiArray,
+            '/high_level_planner/gap_following_params',
+            self.dynamic_tune_callback,
             10
         )
 
@@ -276,6 +285,35 @@ class GapFollowingNode(Node):
         # Use absolute speed so reverse motion does not invert speed limiting.
         self.current_speed = abs(msg.twist.twist.linear.x)
         self.have_odom = True
+
+    def dynamic_tune_callback(self, msg):
+        """Apply dynamic max speed and slowdown distance from high-level planner."""
+        if len(msg.data) < 2:
+            self.get_logger().warning(
+                'Ignoring /high_level_planner/gap_following_params message with <2 values.'
+            )
+            return
+
+        new_max_speed = max(0.0, float(msg.data[0]))
+        new_distance_slowdown = max(0.01, float(msg.data[1]))
+        obstacle_flag = bool(msg.data[2] > 0.5) if len(msg.data) > 2 else None
+        obstacle_count = int(msg.data[3]) if len(msg.data) > 3 else None
+
+        changed = (
+            abs(new_max_speed - self.max_speed) > 1e-4
+            or abs(new_distance_slowdown - self.distance_slowdown_threshold) > 1e-4
+        )
+
+        self.max_speed = new_max_speed
+        self.min_speed = min(self.min_speed, self.max_speed)
+        self.distance_slowdown_threshold = new_distance_slowdown
+
+        if changed:
+            self.get_logger().info(
+                f'Received dynamic tune: max_speed={self.max_speed:.2f}, '
+                f'distance_slowdown_threshold={self.distance_slowdown_threshold:.2f}, '
+                f'obstacle={obstacle_flag}, obstacle_count={obstacle_count}'
+            )
 
     def hot_reload_config(self):
         """
