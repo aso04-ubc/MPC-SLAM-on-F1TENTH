@@ -48,7 +48,7 @@ class MPCNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('odom_topic', '/ego_racecar/odom'),
+                ('odom_topic', '/odom'),
                 ('scan_topic', '/scan'),
                 ('pose_topic', '/mapping/fused_pose'),
                 ('race_line_topic', '/race_line/global_path'),
@@ -61,17 +61,17 @@ class MPCNode(Node):
                 ('max_path_lateral_error_m', 2.0),
 
                 ('dt', 0.05),
-                ('horizon', 13),
+                ('horizon', 11),
                 ('wheelbase', 0.50),
 
-                ('max_speed', 3.5),
+                ('max_speed', 4.0),
                 ('min_speed', 0.0),
-                ('straight_speed', 3.5),
-                ('corner_speed_cap', 2.0),
+                ('straight_speed', 4.0),
+                ('corner_speed_cap', 3.5),
                 ('hard_stop_distance', 0.32),
 
-                ('max_accel', 10.0),
-                ('min_accel', -5.0),
+                ('max_accel', 20.0),
+                ('min_accel', -20.0),
                 ('max_steer', 0.36),
                 ('max_ddelta', 0.024),
 
@@ -82,10 +82,10 @@ class MPCNode(Node):
                 ('steering_output_sign', 1.0),
 
                 # FTG
-                ('ftg_max_range', 3.5),
+                ('ftg_max_range', 3.0),
                 ('ftg_min_safe_distance', 0.25),
                 ('ftg_car_width', 0.35),
-                ('ftg_disparity_threshold', 0.7),
+                ('ftg_disparity_threshold', 0.8),
                 ('ftg_smoothing_window_size', 10),
                 ('ftg_use_disparity_extender', False),
 
@@ -104,12 +104,12 @@ class MPCNode(Node):
                 ('effective_goal_front_gain', 0.85),
 
                 # Planner corridor
-                ('path_x_max', 1.65),
-                ('path_y_limit', 1.7),
+                ('path_x_max', 1.3),
+                ('path_y_limit', 1.1),
                 ('corridor_bin_half_width', 0.18),
                 ('corridor_margin', 0.08),
                 ('corridor_min_half_width', 0.18),
-                ('corridor_smooth_passes', 2),
+                ('corridor_smooth_passes', 5),
                 # How much to smooth the planner reference path in the local frame.
                 # 0 keeps the planner reference as-is.
                 ('planner_ref_smooth_passes', 1),
@@ -141,10 +141,10 @@ class MPCNode(Node):
                 ('terminal_goal_blend_max', 0.10),
 
                 # Speed shaping
-                ('speed_target_angle_gain', 1.65),
-                ('speed_curvature_gain', 2.5),
-                ('speed_front_clearance_gain', 1.3),
-                ('speed_width_gain', 1.5),
+                ('speed_target_angle_gain', 2.00),
+                ('speed_curvature_gain', 3.0),
+                ('speed_front_clearance_gain', 3.0),
+                ('speed_width_gain', 4.5),
 
                 # State tracking cost
                 ('q_x', 10.0),
@@ -170,7 +170,7 @@ class MPCNode(Node):
                 ('slack_weight', 12000.0),
 
                 # OpenCV debug
-                ('show_opencv_debug', True),
+                ('show_opencv_debug', False),
                 # When sim=False, publish the same debug canvas as sensor_msgs/Image.
                 ('publish_debug_images', True),
                 ('mpc_debug_image_topic', '/mpc/debug_image'),
