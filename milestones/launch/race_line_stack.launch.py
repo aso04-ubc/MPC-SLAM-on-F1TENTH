@@ -90,6 +90,8 @@ def generate_launch_description():
                 {'sim': sim},
                 {'use_race_line_planner': use_race_line_planner},
                 {'odom_topic': odom_topic},
+                {'map_pose_topic': '/mapping/fused_pose'},
+                {'use_map_pose_for_race_line': True},
             ],
         ),
     ])

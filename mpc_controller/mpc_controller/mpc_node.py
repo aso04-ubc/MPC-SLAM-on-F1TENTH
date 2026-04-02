@@ -27,6 +27,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import LaserScan
 
@@ -51,6 +52,9 @@ class MPCNode(Node):
                 ('odom_topic', '/ego_racecar/odom'),
                 ('scan_topic', '/scan'),
                 ('race_line_topic', '/race_line/global_path'),
+                ('map_pose_topic', '/mapping/fused_pose'),
+                ('use_map_pose_for_race_line', True),
+                ('map_pose_stale_timeout_s', 0.75),
                 ('control_rate_hz', 30.0),
                 ('sim', True),
                 ('use_race_line_planner', True),
@@ -174,6 +178,9 @@ class MPCNode(Node):
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
         self.race_line_topic = self.get_parameter('race_line_topic').value
+        self.map_pose_topic = str(self.get_parameter('map_pose_topic').value)
+        self.use_map_pose_for_race_line = bool(self.get_parameter('use_map_pose_for_race_line').value)
+        self.map_pose_stale_timeout_s = float(self.get_parameter('map_pose_stale_timeout_s').value)
         self.sim = bool(self.get_parameter('sim').value)
         self.use_race_line_planner = bool(self.get_parameter('use_race_line_planner').value)
         self.path_stale_timeout_s = float(self.get_parameter('path_stale_timeout_s').value)
@@ -288,6 +295,12 @@ class MPCNode(Node):
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos)
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos)
         self.race_line_sub = self.create_subscription(Path, self.race_line_topic, self.race_line_callback, 1)
+        self.map_pose_sub = self.create_subscription(
+            PoseStamped,
+            self.map_pose_topic,
+            self.map_pose_callback,
+            qos,
+        )
         self.drive_pub = self.create_publisher(
             DriveControlMessage,
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
@@ -305,6 +318,11 @@ class MPCNode(Node):
         self.race_path_yaw: Optional[np.ndarray] = None
         self.race_path_total_s: float = 0.0
         self.race_path_stamp_s: float = 0.0
+
+        self.map_pose_x: float = 0.0
+        self.map_pose_y: float = 0.0
+        self.map_pose_yaw: float = 0.0
+        self.map_pose_stamp_s: float = -1.0
 
         self.frame_count = 0
         self.solve_count = 0
@@ -355,7 +373,11 @@ class MPCNode(Node):
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.debug_window_name, self.debug_canvas_width, self.debug_canvas_height)
 
-        self.get_logger().info('Safer gap-aware full MPC node started.')
+        self.get_logger().info(
+            'Safer gap-aware full MPC node started. '
+            f'use_map_pose_for_race_line={self.use_map_pose_for_race_line} '
+            f'map_pose_topic={self.map_pose_topic}'
+        )
 
     # ──────────────────────────────────────────────────────────────────
     # ROS callbacks
@@ -384,6 +406,42 @@ class MPCNode(Node):
         self.last_odom_x = x
         self.last_odom_y = y
         self.state = VehicleState(x=x, y=y, yaw=yaw, speed=speed)
+
+    def map_pose_callback(self, msg: PoseStamped) -> None:
+        self.map_pose_x = float(msg.pose.position.x)
+        self.map_pose_y = float(msg.pose.position.y)
+        self.map_pose_yaw = self.quaternion_to_yaw(
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w,
+        )
+        stamp_s = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        if stamp_s <= 1e-9:
+            stamp_s = self.now_seconds()
+        self.map_pose_stamp_s = stamp_s
+
+    def map_pose_fresh(self) -> bool:
+        if self.map_pose_stamp_s < 0.0:
+            return False
+        age = self.now_seconds() - self.map_pose_stamp_s
+        return age <= self.map_pose_stale_timeout_s
+
+    def path_reference_pose_xy_yaw(self) -> Optional[Tuple[float, float, float]]:
+        """World pose for transforming /race_line/global_path into the body frame.
+
+        The planner publishes path points in the live mapper frame (same as
+        /mapping/fused_pose). Simulator odometry is often in a different global
+        frame, so we must align using fused_pose when use_map_pose_for_race_line
+        is true. Otherwise fall back to odometry for standalone setups.
+        """
+        if self.use_map_pose_for_race_line:
+            if self.map_pose_fresh():
+                return (self.map_pose_x, self.map_pose_y, self.map_pose_yaw)
+            return None
+        if self.state is None:
+            return None
+        return (self.state.x, self.state.y, self.state.yaw)
 
     def process_icp_loop_closure(self) -> None:
         """
@@ -799,13 +857,15 @@ class MPCNode(Node):
         return np.column_stack((xq, yq))
 
     def global_to_local_xy(self, points_xy: np.ndarray) -> np.ndarray:
-        if self.state is None:
-            raise ValueError('Vehicle state unavailable')
+        ref = self.path_reference_pose_xy_yaw()
+        if ref is None:
+            raise ValueError('Path reference pose unavailable (need fused pose or odom)')
 
-        dx = points_xy[:, 0] - self.state.x
-        dy = points_xy[:, 1] - self.state.y
-        c = math.cos(self.state.yaw)
-        s = math.sin(self.state.yaw)
+        rx, ry, ryaw = ref
+        dx = points_xy[:, 0] - rx
+        dy = points_xy[:, 1] - ry
+        c = math.cos(ryaw)
+        s = math.sin(ryaw)
 
         x_local = c * dx + s * dy
         y_local = -s * dx + c * dy
@@ -824,14 +884,19 @@ class MPCNode(Node):
         if self.race_path_total_s <= 1.0:
             return None
 
+        path_pose = self.path_reference_pose_xy_yaw()
+        if path_pose is None:
+            return None
+
+        px, py, pyaw = path_pose
         pts = self.race_path_xy
-        dxy = pts - np.array([self.state.x, self.state.y], dtype=float)
+        dxy = pts - np.array([px, py], dtype=float)
         dist = np.hypot(dxy[:, 0], dxy[:, 1])
         idx = int(np.argmin(dist))
         if float(dist[idx]) > self.max_path_lateral_error_m:
             return None
 
-        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - self.state.yaw))
+        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - pyaw))
         if heading_err > 1.8:
             return None
 
@@ -946,7 +1011,7 @@ class MPCNode(Node):
     ) -> Optional[dict]:
         self.last_path_horizon_local = None
 
-        if self.race_path_xy is not None and self.state is not None:
+        if self.race_path_xy is not None and self.path_reference_pose_xy_yaw() is not None:
             all_local = self.global_to_local_xy(self.race_path_xy)
             keep = (
                 (all_local[:, 0] >= -1.0)
