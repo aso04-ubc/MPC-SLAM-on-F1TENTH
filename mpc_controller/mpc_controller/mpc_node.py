@@ -167,7 +167,7 @@ class MPCNode(Node):
                 ('slack_weight', 12000.0),
 
                 # OpenCV debug
-                ('show_opencv_debug', False),
+                ('show_opencv_debug', True),
                 ('debug_canvas_width', 1500),
                 ('debug_canvas_height', 980),
                 ('debug_pixels_per_meter', 170.0),
@@ -728,7 +728,7 @@ class MPCNode(Node):
 
         problem = None
 
-        if self.use_race_line_planner and self.has_loop_closed:
+        if self.use_race_line_planner :
             problem = self.build_race_path_problem(target_angle, target_distance, front_min)
             if problem is not None:
                 self.last_ref_source = 'planner'
