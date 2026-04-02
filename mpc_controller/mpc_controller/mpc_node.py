@@ -26,6 +26,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import Image, LaserScan
 
@@ -49,10 +50,13 @@ class MPCNode(Node):
             parameters=[
                 ('odom_topic', '/ego_racecar/odom'),
                 ('scan_topic', '/scan'),
+                ('pose_topic', '/mapping/fused_pose'),
                 ('race_line_topic', '/race_line/global_path'),
                 ('control_rate_hz', 30.0),
                 ('sim', True),
                 ('use_race_line_planner', True),
+                ('use_pose_for_raceline_frame', True),
+                ('pose_stale_timeout_s', 1.0),
                 ('path_stale_timeout_s', 2.0),
                 ('max_path_lateral_error_m', 2.0),
 
@@ -179,9 +183,12 @@ class MPCNode(Node):
 
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
+        self.pose_topic = self.get_parameter('pose_topic').value
         self.race_line_topic = self.get_parameter('race_line_topic').value
         self.sim = bool(self.get_parameter('sim').value)
         self.use_race_line_planner = bool(self.get_parameter('use_race_line_planner').value)
+        self.use_pose_for_raceline_frame = bool(self.get_parameter('use_pose_for_raceline_frame').value)
+        self.pose_stale_timeout_s = float(self.get_parameter('pose_stale_timeout_s').value)
         self.path_stale_timeout_s = float(self.get_parameter('path_stale_timeout_s').value)
         self.max_path_lateral_error_m = float(self.get_parameter('max_path_lateral_error_m').value)
 
@@ -304,6 +311,7 @@ class MPCNode(Node):
 
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos_sensors)
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos_sensors)
+        self.pose_sub = self.create_subscription(PoseStamped, self.pose_topic, self.pose_callback, 10)
         self.race_line_sub = self.create_subscription(Path, self.race_line_topic, self.race_line_callback, 1)
         self.drive_pub = self.create_publisher(
             DriveControlMessage,
@@ -317,6 +325,8 @@ class MPCNode(Node):
 
         self.state: Optional[VehicleState] = None
         self.last_scan: Optional[LaserScan] = None
+        self.latest_pose: Optional[PoseStamped] = None
+        self.latest_pose_rx_time_s: float = 0.0
         self.race_path_xy: Optional[np.ndarray] = None
         self.race_path_s: Optional[np.ndarray] = None
         self.race_path_yaw: Optional[np.ndarray] = None
@@ -353,6 +363,13 @@ class MPCNode(Node):
         self.last_global_path_local = None
         self.last_path_horizon_local = None
         self.last_ref_source = 'ftg'
+        self.last_raceline_reject_reason = 'none'
+        self.last_raceline_path_age_s = float('inf')
+        self.last_raceline_nearest_dist_m = float('nan')
+        self.last_raceline_heading_err_rad = float('nan')
+        self.last_raceline_front_ratio = 0.0
+        self.last_raceline_pose_source = 'odom'
+        self.last_raceline_pose_age_s = float('inf')
 
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
@@ -382,6 +399,10 @@ class MPCNode(Node):
 
     def scan_callback(self, msg: LaserScan) -> None:
         self.last_scan = msg
+
+    def pose_callback(self, msg: PoseStamped) -> None:
+        self.latest_pose = msg
+        self.latest_pose_rx_time_s = self.now_seconds()
 
     def race_line_callback(self, msg: Path) -> None:
         n = len(msg.poses)
@@ -452,6 +473,8 @@ class MPCNode(Node):
             problem = self.build_race_path_problem(target_angle, target_distance, front_min)
             if problem is not None:
                 self.last_ref_source = 'planner'
+        else:
+            self.last_raceline_reject_reason = 'planner_disabled'
 
         if problem is None:
             problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
@@ -560,6 +583,32 @@ class MPCNode(Node):
         age = self.now_seconds() - self.race_path_stamp_s
         return age <= self.path_stale_timeout_s
 
+    def pose_is_fresh(self) -> bool:
+        if self.latest_pose is None:
+            return False
+        return (self.now_seconds() - self.latest_pose_rx_time_s) <= self.pose_stale_timeout_s
+
+    def get_raceline_match_pose(self) -> Optional[Tuple[float, float, float]]:
+        if self.use_pose_for_raceline_frame and self.pose_is_fresh() and self.latest_pose is not None:
+            pose = self.latest_pose.pose
+            q = pose.orientation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            self.last_raceline_pose_source = 'fused_pose'
+            self.last_raceline_pose_age_s = self.now_seconds() - self.latest_pose_rx_time_s
+            return float(pose.position.x), float(pose.position.y), float(yaw)
+
+        if self.state is None:
+            self.last_raceline_pose_source = 'none'
+            self.last_raceline_pose_age_s = float('inf')
+            return None
+
+        self.last_raceline_pose_source = 'odom'
+        self.last_raceline_pose_age_s = 0.0
+        return self.state.x, self.state.y, self.state.yaw
+
     def interpolate_path_xy(self, s_query: np.ndarray) -> np.ndarray:
         if self.race_path_xy is None or self.race_path_s is None:
             raise ValueError('Race path is not available')
@@ -598,22 +647,50 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> Optional[dict]:
-        if self.state is None or not self.has_fresh_race_path():
+        self.last_raceline_reject_reason = 'none'
+        self.last_raceline_path_age_s = float('inf')
+        self.last_raceline_nearest_dist_m = float('nan')
+        self.last_raceline_heading_err_rad = float('nan')
+        self.last_raceline_front_ratio = 0.0
+        self.last_raceline_pose_source = 'none'
+        self.last_raceline_pose_age_s = float('inf')
+
+        if self.state is None:
+            self.last_raceline_reject_reason = 'no_state'
             return None
+
+        match_pose = self.get_raceline_match_pose()
+        if match_pose is None:
+            self.last_raceline_reject_reason = 'no_match_pose'
+            return None
+        match_x, match_y, match_yaw = match_pose
+
         if self.race_path_xy is None or self.race_path_s is None or self.race_path_yaw is None:
+            self.last_raceline_reject_reason = 'no_path'
             return None
+
+        self.last_raceline_path_age_s = self.now_seconds() - self.race_path_stamp_s
+        if self.last_raceline_path_age_s > self.path_stale_timeout_s:
+            self.last_raceline_reject_reason = 'stale_path'
+            return None
+
         if self.race_path_total_s <= 1.0:
+            self.last_raceline_reject_reason = 'path_too_short'
             return None
 
         pts = self.race_path_xy
-        dxy = pts - np.array([self.state.x, self.state.y], dtype=float)
+        dxy = pts - np.array([match_x, match_y], dtype=float)
         dist = np.hypot(dxy[:, 0], dxy[:, 1])
         idx = int(np.argmin(dist))
-        if float(dist[idx]) > self.max_path_lateral_error_m:
+        self.last_raceline_nearest_dist_m = float(dist[idx])
+        if self.last_raceline_nearest_dist_m > self.max_path_lateral_error_m:
+            self.last_raceline_reject_reason = 'too_far_from_path'
             return None
 
-        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - self.state.yaw))
+        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - match_yaw))
+        self.last_raceline_heading_err_rad = heading_err
         if heading_err > 1.8:
+            self.last_raceline_reject_reason = 'heading_mismatch'
             return None
 
         lookahead_x = self.lookahead_base
@@ -632,7 +709,9 @@ class MPCNode(Node):
         y_ref = local_horizon[:, 1]
 
         # Reject path segments that do not project mostly in front of the car.
+        self.last_raceline_front_ratio = float(np.sum(x_ref > -0.05)) / float(max(1, len(x_ref)))
         if int(np.sum(x_ref > -0.05)) < max(4, int(0.65 * len(x_ref))):
+            self.last_raceline_reject_reason = 'path_not_in_front'
             return None
 
         x_ref = np.maximum.accumulate(x_ref)
@@ -701,6 +780,7 @@ class MPCNode(Node):
 
         self.last_ref = z_ref.copy()
         self.last_path_horizon_local = np.column_stack((x_ref, y_ref))
+        self.last_raceline_reject_reason = 'ok'
 
         all_local = self.global_to_local_xy(self.race_path_xy)
         keep = (
@@ -1746,6 +1826,16 @@ class MPCNode(Node):
             f'min_width={self.last_min_width:.3f} m   gap_alpha={self.last_gap_alpha:.3f}   margin={self.last_safe_margin:.3f}',
             f'left_clear={float(getattr(self.gap_algo, "last_left_clear", 0.0)):.3f}   '
             f'right_clear={float(getattr(self.gap_algo, "last_right_clear", 0.0)):.3f}',
+            f'raceline_cfg={"ON" if self.use_race_line_planner else "OFF"}   '
+            f'raceline_fresh={"YES" if self.has_fresh_race_path() else "NO"}   '
+            f'raceline_used={"YES" if self.last_ref_source == "planner" else "NO"}',
+            f'raceline_reason={self.last_raceline_reject_reason} '
+            f'age={self.last_raceline_path_age_s:.2f}s '
+            f'dist={self.last_raceline_nearest_dist_m:.2f}m '
+            f'hdg={self.last_raceline_heading_err_rad:.2f}rad '
+            f'front={self.last_raceline_front_ratio:.2f} '
+            f'pose={self.last_raceline_pose_source} '
+            f'pose_age={self.last_raceline_pose_age_s:.2f}s',
             f'display_x={self.display_x_max:.1f} planner_x={self.path_x_max:.1f} '
             f'solve={self.solve_time_ms_last:.2f} ms source={self.last_ref_source}',
         ]
