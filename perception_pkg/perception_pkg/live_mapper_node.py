@@ -104,7 +104,8 @@ class LiveMapperNode(Node):
                 ('occ_thresh', 90),
                 ('scan_max_range_m', 1.0),
                 ('scan_trim_count', 80),
-                ('scan_angle_offset_rad', math.pi),
+                # 0: 激光扇区与调试黄色箭头（车体前进方向）一致；π 适用于激光坐标系与车头相反时装配
+                ('scan_angle_offset_rad', 0.0),
                 ('track_width_assumption_enabled', True),
                 ('track_width_init_m', 1.0),
                 ('track_width_alpha', 0.97),
@@ -336,7 +337,7 @@ class LiveMapperNode(Node):
 
             self.last_icp_time = ts
 
-        global_angles = self.fused_pose['yaw'] + angles_valid + self.scan_angle_offset_rad
+        global_angles = self.fused_pose['yaw'] + local_angles
         px_valid = self.fused_pose['x'] + ranges_valid * np.cos(global_angles)
         py_valid = self.fused_pose['y'] + ranges_valid * np.sin(global_angles)
 
