@@ -10,6 +10,12 @@ ROS 2 F1TENTH safer full MPC with:
 - OpenCV visualizer
 """
 
+"""
+To run in sim, use 
+ros2 launch milestones race_line_stack.launch.py sim:=true odom_topic:=/ego_racecar/odom map_window_size:=1000 <- (change it based on the setting of the sim map)
+
+"""
+
 import math
 import time
 from dataclasses import dataclass
@@ -26,8 +32,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 
 from mpc_controller.gap_utils import GapFollowAlgo
 
@@ -47,27 +54,33 @@ class MPCNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('odom_topic', '/ego_racecar/odom'),
+                ('odom_topic', '/odom'),
                 ('scan_topic', '/scan'),
+                ('pose_topic', '/mapping/fused_pose'),
                 ('race_line_topic', '/race_line/global_path'),
                 ('control_rate_hz', 30.0),
                 ('sim', True),
                 ('use_race_line_planner', True),
+                ('use_pose_for_raceline_frame', True),
+                ('pose_stale_timeout_s', 1.0),
                 ('path_stale_timeout_s', 2.0),
                 ('max_path_lateral_error_m', 2.0),
+                ('raceline_front_ratio_min', 0.65),
+                ('raceline_front_near_ratio_min', 0.70),
+                ('raceline_front_near_fraction', 0.35),
 
                 ('dt', 0.05),
-                ('horizon', 13),
+                ('horizon', 11),
                 ('wheelbase', 0.50),
 
-                ('max_speed', 3.5),
+                ('max_speed', 4.0),
                 ('min_speed', 0.0),
-                ('straight_speed', 3.5),
-                ('corner_speed_cap', 2.0),
+                ('straight_speed', 4.0),
+                ('corner_speed_cap', 3.5),
                 ('hard_stop_distance', 0.32),
 
-                ('max_accel', 10.0),
-                ('min_accel', -5.0),
+                ('max_accel', 20.0),
+                ('min_accel', -20.0),
                 ('max_steer', 0.36),
                 ('max_ddelta', 0.024),
 
@@ -78,10 +91,10 @@ class MPCNode(Node):
                 ('steering_output_sign', 1.0),
 
                 # FTG
-                ('ftg_max_range', 3.5),
+                ('ftg_max_range', 3.0),
                 ('ftg_min_safe_distance', 0.25),
                 ('ftg_car_width', 0.35),
-                ('ftg_disparity_threshold', 0.7),
+                ('ftg_disparity_threshold', 0.8),
                 ('ftg_smoothing_window_size', 10),
                 ('ftg_use_disparity_extender', False),
 
@@ -100,12 +113,15 @@ class MPCNode(Node):
                 ('effective_goal_front_gain', 0.85),
 
                 # Planner corridor
-                ('path_x_max', 1.65),
-                ('path_y_limit', 1.7),
+                ('path_x_max', 1.3),
+                ('path_y_limit', 1.1),
                 ('corridor_bin_half_width', 0.18),
                 ('corridor_margin', 0.08),
                 ('corridor_min_half_width', 0.18),
-                ('corridor_smooth_passes', 2),
+                ('corridor_smooth_passes', 5),
+                # How much to smooth the planner reference path in the local frame.
+                # 0 keeps the planner reference as-is.
+                ('planner_ref_smooth_passes', 1),
                 ('margin_speed_gain', 0.015),
                 ('margin_steer_gain', 0.03),
 
@@ -134,10 +150,10 @@ class MPCNode(Node):
                 ('terminal_goal_blend_max', 0.10),
 
                 # Speed shaping
-                ('speed_target_angle_gain', 1.65),
-                ('speed_curvature_gain', 2.5),
-                ('speed_front_clearance_gain', 1.3),
-                ('speed_width_gain', 1.5),
+                ('speed_target_angle_gain', 2.00),
+                ('speed_curvature_gain', 3.0),
+                ('speed_front_clearance_gain', 3.0),
+                ('speed_width_gain', 4.5),
 
                 # State tracking cost
                 ('q_x', 10.0),
@@ -164,6 +180,9 @@ class MPCNode(Node):
 
                 # OpenCV debug
                 ('show_opencv_debug', True),
+                # When sim=False, publish the same debug canvas as sensor_msgs/Image.
+                ('publish_debug_images', True),
+                ('mpc_debug_image_topic', '/mpc/debug_image'),
                 ('debug_canvas_width', 1500),
                 ('debug_canvas_height', 980),
                 ('debug_pixels_per_meter', 170.0),
@@ -173,11 +192,17 @@ class MPCNode(Node):
 
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
+        self.pose_topic = self.get_parameter('pose_topic').value
         self.race_line_topic = self.get_parameter('race_line_topic').value
         self.sim = bool(self.get_parameter('sim').value)
         self.use_race_line_planner = bool(self.get_parameter('use_race_line_planner').value)
+        self.use_pose_for_raceline_frame = bool(self.get_parameter('use_pose_for_raceline_frame').value)
+        self.pose_stale_timeout_s = float(self.get_parameter('pose_stale_timeout_s').value)
         self.path_stale_timeout_s = float(self.get_parameter('path_stale_timeout_s').value)
         self.max_path_lateral_error_m = float(self.get_parameter('max_path_lateral_error_m').value)
+        self.raceline_front_ratio_min = float(self.get_parameter('raceline_front_ratio_min').value)
+        self.raceline_front_near_ratio_min = float(self.get_parameter('raceline_front_near_ratio_min').value)
+        self.raceline_front_near_fraction = float(self.get_parameter('raceline_front_near_fraction').value)
 
         self.dt = float(self.get_parameter('dt').value)
         self.N = int(self.get_parameter('horizon').value)
@@ -219,6 +244,7 @@ class MPCNode(Node):
         self.corridor_margin = float(self.get_parameter('corridor_margin').value)
         self.corridor_min_half_width = float(self.get_parameter('corridor_min_half_width').value)
         self.corridor_smooth_passes = int(self.get_parameter('corridor_smooth_passes').value)
+        self.planner_ref_smooth_passes = int(self.get_parameter('planner_ref_smooth_passes').value)
         self.margin_speed_gain = float(self.get_parameter('margin_speed_gain').value)
         self.margin_steer_gain = float(self.get_parameter('margin_steer_gain').value)
 
@@ -266,6 +292,13 @@ class MPCNode(Node):
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
         self.show_opencv_debug = self.show_opencv_debug and self.sim
+        self.publish_mpc_debug_images = (
+            (not self.sim) and bool(self.get_parameter('publish_debug_images').value)
+        )
+        self.mpc_debug_image_topic = str(self.get_parameter('mpc_debug_image_topic').value)
+        self.mpc_debug_image_pub = None
+        if self.publish_mpc_debug_images:
+            self.mpc_debug_image_pub = self.create_publisher(Image, self.mpc_debug_image_topic, 1)
         self.debug_canvas_width = int(self.get_parameter('debug_canvas_width').value)
         self.debug_canvas_height = int(self.get_parameter('debug_canvas_height').value)
         self.debug_pixels_per_meter = float(self.get_parameter('debug_pixels_per_meter').value)
@@ -290,6 +323,7 @@ class MPCNode(Node):
 
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos_sensors)
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos_sensors)
+        self.pose_sub = self.create_subscription(PoseStamped, self.pose_topic, self.pose_callback, 10)
         self.race_line_sub = self.create_subscription(Path, self.race_line_topic, self.race_line_callback, 1)
         self.drive_pub = self.create_publisher(
             DriveControlMessage,
@@ -303,6 +337,8 @@ class MPCNode(Node):
 
         self.state: Optional[VehicleState] = None
         self.last_scan: Optional[LaserScan] = None
+        self.latest_pose: Optional[PoseStamped] = None
+        self.latest_pose_rx_time_s: float = 0.0
         self.race_path_xy: Optional[np.ndarray] = None
         self.race_path_s: Optional[np.ndarray] = None
         self.race_path_yaw: Optional[np.ndarray] = None
@@ -339,6 +375,19 @@ class MPCNode(Node):
         self.last_global_path_local = None
         self.last_path_horizon_local = None
         self.last_ref_source = 'ftg'
+        self.last_raceline_reject_reason = 'none'
+        self.last_raceline_path_age_s = float('inf')
+        self.last_raceline_nearest_dist_m = float('nan')
+        self.last_raceline_heading_err_rad = float('nan')
+        self.last_raceline_front_ratio = 0.0
+        self.last_raceline_pose_source = 'odom'
+        self.last_raceline_pose_age_s = float('inf')
+        self.last_raceline_heading_err_forward_rad = float('nan')
+        self.last_raceline_heading_err_reverse_rad = float('nan')
+        self.last_raceline_match_direction = 'forward'
+        self.last_raceline_front_near_ratio = 0.0
+        self.last_raceline_local_frame_source = 'state'
+        self.last_raceline_debug_details = 'uninitialized'
 
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
@@ -346,9 +395,9 @@ class MPCNode(Node):
 
         self.get_logger().info('Safer gap-aware full MPC node started.')
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # ROS callbacks
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def odom_callback(self, msg: Odometry) -> None:
         x = msg.pose.pose.position.x
@@ -368,6 +417,10 @@ class MPCNode(Node):
 
     def scan_callback(self, msg: LaserScan) -> None:
         self.last_scan = msg
+
+    def pose_callback(self, msg: PoseStamped) -> None:
+        self.latest_pose = msg
+        self.latest_pose_rx_time_s = self.now_seconds()
 
     def race_line_callback(self, msg: Path) -> None:
         n = len(msg.poses)
@@ -406,9 +459,9 @@ class MPCNode(Node):
     def now_seconds(self) -> float:
         return float(self.get_clock().now().nanoseconds) * 1e-9
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Main loop
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def control_callback(self) -> None:
         if self.state is None or self.last_scan is None:
@@ -438,6 +491,27 @@ class MPCNode(Node):
             problem = self.build_race_path_problem(target_angle, target_distance, front_min)
             if problem is not None:
                 self.last_ref_source = 'planner'
+        else:
+            self.last_raceline_reject_reason = 'planner_disabled'
+            self.last_raceline_front_near_ratio = 0.0
+            self.last_raceline_local_frame_source = 'none'
+            self.last_raceline_debug_details = self.format_raceline_debug(
+                reason='planner_disabled',
+                cfg_enabled=False,
+                state_ok=(self.state is not None),
+                match_pose_ok=False,
+                path_ok=False,
+                fresh_ok=False,
+                length_ok=False,
+                dist_ok=False,
+                heading_ok=False,
+                front_ok=False,
+                path_age_s=float('nan'),
+                path_len_m=float('nan'),
+                nearest_dist_m=float('nan'),
+                heading_err_rad=float('nan'),
+                front_ratio=float('nan'),
+            )
 
         if problem is None:
             problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
@@ -447,7 +521,7 @@ class MPCNode(Node):
             v_cmd = 0.0
             delta_cmd = self.steering_output_sign * self.prev_delta_cmd_internal
             self.publish_drive(v_cmd, delta_cmd)
-            if self.show_opencv_debug:
+            if self.show_opencv_debug or self.publish_mpc_debug_images:
                 self.draw_debug_canvas(v_cmd, delta_cmd)
             return
 
@@ -476,22 +550,32 @@ class MPCNode(Node):
                 f'ema={self.solve_time_ms_ema:.2f} ms'
             )
 
+        planner_reason = 'using_planner'
+        if self.last_ref_source != 'planner':
+            planner_reason = self.last_raceline_reject_reason
+
         self.get_logger().info(
             f'cmd v={v_cmd:.3f} delta={delta_cmd:.3f}  '
             f'gap_ang={target_angle:.3f} gap_d={target_distance:.3f}  '
             f'front_min={front_min:.3f}  goal=({goal_local[0]:.3f},{goal_local[1]:.3f})  '
             f'min_width={self.last_min_width:.3f} gap_alpha={self.last_gap_alpha:.3f} '
-            f'source={self.last_ref_source}'
+            f'source={self.last_ref_source} planner_reason={planner_reason}'
         )
+
+        if self.last_ref_source != 'planner':
+            self.get_logger().info(
+                f'planner_skip reason={self.last_raceline_reject_reason} '
+                f'{self.last_raceline_debug_details}'
+            )
 
         self.publish_drive(v_cmd, delta_cmd)
 
-        if self.show_opencv_debug:
+        if self.show_opencv_debug or self.publish_mpc_debug_images:
             self.draw_debug_canvas(v_cmd, delta_cmd)
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Goal filtering
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def make_filtered_goal(
         self,
@@ -546,6 +630,32 @@ class MPCNode(Node):
         age = self.now_seconds() - self.race_path_stamp_s
         return age <= self.path_stale_timeout_s
 
+    def pose_is_fresh(self) -> bool:
+        if self.latest_pose is None:
+            return False
+        return (self.now_seconds() - self.latest_pose_rx_time_s) <= self.pose_stale_timeout_s
+
+    def get_raceline_match_pose(self) -> Optional[Tuple[float, float, float]]:
+        if self.use_pose_for_raceline_frame and self.pose_is_fresh() and self.latest_pose is not None:
+            pose = self.latest_pose.pose
+            q = pose.orientation
+            yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
+            self.last_raceline_pose_source = 'fused_pose'
+            self.last_raceline_pose_age_s = self.now_seconds() - self.latest_pose_rx_time_s
+            return float(pose.position.x), float(pose.position.y), float(yaw)
+
+        if self.state is None:
+            self.last_raceline_pose_source = 'none'
+            self.last_raceline_pose_age_s = float('inf')
+            return None
+
+        self.last_raceline_pose_source = 'odom'
+        self.last_raceline_pose_age_s = 0.0
+        return self.state.x, self.state.y, self.state.yaw
+
     def interpolate_path_xy(self, s_query: np.ndarray) -> np.ndarray:
         if self.race_path_xy is None or self.race_path_s is None:
             raise ValueError('Race path is not available')
@@ -565,18 +675,71 @@ class MPCNode(Node):
         yq = np.interp(s_wrapped, s_ext, y_ext)
         return np.column_stack((xq, yq))
 
-    def global_to_local_xy(self, points_xy: np.ndarray) -> np.ndarray:
-        if self.state is None:
-            raise ValueError('Vehicle state unavailable')
+    def global_to_local_xy(
+        self,
+        points_xy: np.ndarray,
+        origin_pose: Optional[Tuple[float, float, float]] = None,
+    ) -> np.ndarray:
+        if origin_pose is None:
+            if self.state is None:
+                raise ValueError('Vehicle state unavailable')
+            origin_x = self.state.x
+            origin_y = self.state.y
+            origin_yaw = self.state.yaw
+        else:
+            origin_x, origin_y, origin_yaw = origin_pose
 
-        dx = points_xy[:, 0] - self.state.x
-        dy = points_xy[:, 1] - self.state.y
-        c = math.cos(self.state.yaw)
-        s = math.sin(self.state.yaw)
+        dx = points_xy[:, 0] - origin_x
+        dy = points_xy[:, 1] - origin_y
+        c = math.cos(origin_yaw)
+        s = math.sin(origin_yaw)
 
         x_local = c * dx + s * dy
         y_local = -s * dx + c * dy
         return np.column_stack((x_local, y_local))
+
+    def format_raceline_debug(
+        self,
+        reason: str,
+        cfg_enabled: bool,
+        state_ok: bool,
+        match_pose_ok: bool,
+        path_ok: bool,
+        fresh_ok: bool,
+        length_ok: bool,
+        dist_ok: bool,
+        heading_ok: bool,
+        front_ok: bool,
+        path_age_s: float,
+        path_len_m: float,
+        nearest_dist_m: float,
+        heading_err_rad: float,
+        front_ratio: float,
+    ) -> str:
+        def yn(flag: bool) -> str:
+            return 'Y' if flag else 'N'
+
+        def fmt(v: float, digits: int = 2) -> str:
+            return f'{v:.{digits}f}' if np.isfinite(v) else 'nan'
+
+        return (
+            f'checks(cfg={yn(cfg_enabled)} state={yn(state_ok)} pose={yn(match_pose_ok)} '
+            f'path={yn(path_ok)} fresh={yn(fresh_ok)} len={yn(length_ok)} '
+            f'dist={yn(dist_ok)} hdg={yn(heading_ok)} front={yn(front_ok)}) '
+            f'metrics(pose_src={self.last_raceline_pose_source} '
+            f'pose_age={fmt(self.last_raceline_pose_age_s)}/{self.pose_stale_timeout_s:.2f}s '
+            f'path_age={fmt(path_age_s)}/{self.path_stale_timeout_s:.2f}s '
+            f'path_len={fmt(path_len_m)}m '
+            f'dist={fmt(nearest_dist_m)}/{self.max_path_lateral_error_m:.2f}m '
+            f'hdg={fmt(heading_err_rad)}/1.80rad '
+            f'hdg_fwd={fmt(self.last_raceline_heading_err_forward_rad)} '
+            f'hdg_rev={fmt(self.last_raceline_heading_err_reverse_rad)} '
+            f'front={fmt(front_ratio)}/{self.raceline_front_ratio_min:.2f} '
+            f'front_near={fmt(self.last_raceline_front_near_ratio)}/{self.raceline_front_near_ratio_min:.2f} '
+            f'dir={self.last_raceline_match_direction} '
+            f'frame={self.last_raceline_local_frame_source}) '
+            f'reason={reason}'
+        )
 
     def build_race_path_problem(
         self,
@@ -584,23 +747,116 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> Optional[dict]:
-        if self.state is None or not self.has_fresh_race_path():
+        self.last_raceline_reject_reason = 'none'
+        self.last_raceline_path_age_s = float('inf')
+        self.last_raceline_nearest_dist_m = float('nan')
+        self.last_raceline_heading_err_rad = float('nan')
+        self.last_raceline_front_ratio = 0.0
+        self.last_raceline_pose_source = 'none'
+        self.last_raceline_pose_age_s = float('inf')
+        self.last_raceline_heading_err_forward_rad = float('nan')
+        self.last_raceline_heading_err_reverse_rad = float('nan')
+        self.last_raceline_match_direction = 'forward'
+        self.last_raceline_front_near_ratio = 0.0
+        self.last_raceline_local_frame_source = 'state'
+
+        check_state = (self.state is not None)
+        check_match_pose = False
+        check_path = False
+        check_fresh = False
+        check_length = False
+        check_dist = False
+        check_heading = False
+        check_front = False
+
+        path_age_s = float('inf')
+        path_len_m = float('nan')
+        nearest_dist_m = float('nan')
+        heading_err_rad = float('nan')
+        front_ratio = float('nan')
+
+        def write_debug(reason: str) -> None:
+            self.last_raceline_debug_details = self.format_raceline_debug(
+                reason=reason,
+                cfg_enabled=self.use_race_line_planner,
+                state_ok=check_state,
+                match_pose_ok=check_match_pose,
+                path_ok=check_path,
+                fresh_ok=check_fresh,
+                length_ok=check_length,
+                dist_ok=check_dist,
+                heading_ok=check_heading,
+                front_ok=check_front,
+                path_age_s=path_age_s,
+                path_len_m=path_len_m,
+                nearest_dist_m=nearest_dist_m,
+                heading_err_rad=heading_err_rad,
+                front_ratio=front_ratio,
+            )
+
+        if self.state is None:
+            self.last_raceline_reject_reason = 'no_state'
+            write_debug('no_state')
             return None
+
+        match_pose = self.get_raceline_match_pose()
+        if match_pose is None:
+            self.last_raceline_reject_reason = 'no_match_pose'
+            write_debug('no_match_pose')
+            return None
+        check_match_pose = True
+        match_x, match_y, match_yaw = match_pose
+        local_frame_pose = (match_x, match_y, match_yaw)
+        self.last_raceline_local_frame_source = self.last_raceline_pose_source
+
         if self.race_path_xy is None or self.race_path_s is None or self.race_path_yaw is None:
+            self.last_raceline_reject_reason = 'no_path'
+            write_debug('no_path')
             return None
+        check_path = True
+        path_len_m = float(self.race_path_total_s)
+
+        self.last_raceline_path_age_s = self.now_seconds() - self.race_path_stamp_s
+        path_age_s = float(self.last_raceline_path_age_s)
+        if self.last_raceline_path_age_s > self.path_stale_timeout_s:
+            self.last_raceline_reject_reason = 'stale_path'
+            write_debug('stale_path')
+            return None
+        check_fresh = True
+
         if self.race_path_total_s <= 1.0:
+            self.last_raceline_reject_reason = 'path_too_short'
+            write_debug('path_too_short')
             return None
+        check_length = True
 
         pts = self.race_path_xy
-        dxy = pts - np.array([self.state.x, self.state.y], dtype=float)
+        dxy = pts - np.array([match_x, match_y], dtype=float)
         dist = np.hypot(dxy[:, 0], dxy[:, 1])
         idx = int(np.argmin(dist))
-        if float(dist[idx]) > self.max_path_lateral_error_m:
+        self.last_raceline_nearest_dist_m = float(dist[idx])
+        nearest_dist_m = float(self.last_raceline_nearest_dist_m)
+        if self.last_raceline_nearest_dist_m > self.max_path_lateral_error_m:
+            self.last_raceline_reject_reason = 'too_far_from_path'
+            write_debug('too_far_from_path')
             return None
+        check_dist = True
 
-        heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - self.state.yaw))
-        if heading_err > 1.8:
+        heading_err_fwd = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - match_yaw))
+        heading_err_rev = abs(self.wrap_angle(float(self.race_path_yaw[idx]) + math.pi - match_yaw))
+        self.last_raceline_heading_err_forward_rad = float(heading_err_fwd)
+        self.last_raceline_heading_err_reverse_rad = float(heading_err_rev)
+
+        best_heading_err = min(heading_err_fwd, heading_err_rev)
+        self.last_raceline_heading_err_rad = float(best_heading_err)
+        heading_err_rad = float(best_heading_err)
+        if best_heading_err > 1.8:
+            self.last_raceline_reject_reason = 'heading_mismatch'
+            write_debug('heading_mismatch')
             return None
+        check_heading = True
+
+        prefer_reverse = heading_err_rev < heading_err_fwd
 
         lookahead_x = self.lookahead_base
         lookahead_x += self.lookahead_front_gain * max(0.0, front_min)
@@ -609,22 +865,95 @@ class MPCNode(Node):
         lookahead_x = float(np.clip(lookahead_x, 0.65, self.path_x_max))
 
         s0 = float(self.race_path_s[idx])
-        s_targets = s0 + np.linspace(0.0, lookahead_x, self.N + 1)
+        min_front_count = max(4, int(self.raceline_front_ratio_min * (self.N + 1)))
+        near_front_count_window = max(3, int(self.raceline_front_near_fraction * (self.N + 1)))
 
-        global_horizon = self.interpolate_path_xy(s_targets)
-        local_horizon = self.global_to_local_xy(global_horizon)
+        if prefer_reverse:
+            direction_candidates = [
+                (-1.0, heading_err_rev, 'reverse'),
+                (1.0, heading_err_fwd, 'forward'),
+            ]
+        else:
+            direction_candidates = [
+                (1.0, heading_err_fwd, 'forward'),
+                (-1.0, heading_err_rev, 'reverse'),
+            ]
 
-        x_ref = local_horizon[:, 0]
-        y_ref = local_horizon[:, 1]
+        chosen = None
+        best_front_ratio = -1.0
+        best_front_near_ratio = -1.0
+        best_front_dir = 'forward'
+        best_front_value = float('nan')
+        best_front_near_value = float('nan')
 
-        # Reject path segments that do not project mostly in front of the car.
-        if int(np.sum(x_ref > -0.05)) < max(4, int(0.65 * len(x_ref))):
+        for direction_sign, direction_heading_err, direction_name in direction_candidates:
+            if direction_heading_err > 1.8:
+                continue
+
+            s_targets = s0 + direction_sign * np.linspace(0.0, lookahead_x, self.N + 1)
+            global_horizon = self.interpolate_path_xy(s_targets)
+            local_horizon = self.global_to_local_xy(global_horizon, origin_pose=local_frame_pose)
+
+            x_try = local_horizon[:, 0]
+            y_try = local_horizon[:, 1]
+
+            front_count = int(np.sum(x_try > -0.05))
+            front_ratio_try = float(front_count) / float(max(1, len(x_try)))
+            near_front_count = int(np.sum(x_try[:near_front_count_window] > -0.05))
+            near_front_ratio_try = float(near_front_count) / float(max(1, near_front_count_window))
+
+            overall_front_ok = front_count >= min_front_count
+            near_front_ok = near_front_ratio_try >= self.raceline_front_near_ratio_min
+            front_gate_ok = overall_front_ok or near_front_ok
+
+            if (
+                front_ratio_try > best_front_ratio
+                or (
+                    abs(front_ratio_try - best_front_ratio) <= 1e-9
+                    and near_front_ratio_try > best_front_near_ratio
+                )
+            ):
+                best_front_ratio = front_ratio_try
+                best_front_near_ratio = near_front_ratio_try
+                best_front_dir = direction_name
+                best_front_value = front_ratio_try
+                best_front_near_value = near_front_ratio_try
+
+            if front_gate_ok:
+                chosen = (
+                    direction_name,
+                    x_try,
+                    y_try,
+                    front_ratio_try,
+                    near_front_ratio_try,
+                    direction_heading_err,
+                )
+                break
+
+        if chosen is None:
+            self.last_raceline_match_direction = best_front_dir
+            self.last_raceline_front_ratio = float(best_front_value) if np.isfinite(best_front_value) else 0.0
+            self.last_raceline_front_near_ratio = (
+                float(best_front_near_value) if np.isfinite(best_front_near_value) else 0.0
+            )
+            front_ratio = float(best_front_value)
+            self.last_raceline_reject_reason = 'path_not_in_front'
+            write_debug('path_not_in_front')
             return None
+
+        chosen_direction, x_ref, y_ref, chosen_front_ratio, chosen_front_near_ratio, chosen_heading_err = chosen
+        self.last_raceline_match_direction = chosen_direction
+        self.last_raceline_front_ratio = float(chosen_front_ratio)
+        self.last_raceline_front_near_ratio = float(chosen_front_near_ratio)
+        self.last_raceline_heading_err_rad = float(chosen_heading_err)
+        heading_err_rad = float(chosen_heading_err)
+        front_ratio = float(chosen_front_ratio)
+        check_front = True
 
         x_ref = np.maximum.accumulate(x_ref)
         x_ref = x_ref - x_ref[0]
         x_ref = np.clip(x_ref, 0.0, self.path_x_max + 0.25)
-        y_ref = self.smooth_1d(y_ref, passes=1)
+        y_ref = self.smooth_1d(y_ref, passes=self.planner_ref_smooth_passes)
 
         psi_ref = self.compute_heading_from_xy(x_ref, y_ref)
         delta_ref = self.compute_delta_ref(x_ref, y_ref, psi_ref)
@@ -687,8 +1016,10 @@ class MPCNode(Node):
 
         self.last_ref = z_ref.copy()
         self.last_path_horizon_local = np.column_stack((x_ref, y_ref))
+        self.last_raceline_reject_reason = 'ok'
+        write_debug('ok')
 
-        all_local = self.global_to_local_xy(self.race_path_xy)
+        all_local = self.global_to_local_xy(self.race_path_xy, origin_pose=local_frame_pose)
         keep = (
             (all_local[:, 0] >= -1.0)
             & (all_local[:, 0] <= self.display_x_max)
@@ -1121,9 +1452,9 @@ class MPCNode(Node):
 
         return float(np.clip(v, self.min_speed, self.max_speed))
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Full MPC
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def solve_full_mpc(self, problem: dict) -> Tuple[float, float, np.ndarray, float]:
         t0 = time.perf_counter()
@@ -1404,9 +1735,9 @@ class MPCNode(Node):
 
         return v_cmd, delta_cmd, z_seq, solve_ms
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Dynamics
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def linearize_bicycle_dynamics(
         self,
@@ -1444,9 +1775,9 @@ class MPCNode(Node):
         g = f - A @ np.array([x, y, psi, v], dtype=float) - B @ np.array([a, delta], dtype=float)
         return A, B, g
 
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # Utilities
-    # ──────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def make_bounds_feasible(self, lower: np.ndarray, upper: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         lower = lower.copy()
@@ -1732,6 +2063,21 @@ class MPCNode(Node):
             f'min_width={self.last_min_width:.3f} m   gap_alpha={self.last_gap_alpha:.3f}   margin={self.last_safe_margin:.3f}',
             f'left_clear={float(getattr(self.gap_algo, "last_left_clear", 0.0)):.3f}   '
             f'right_clear={float(getattr(self.gap_algo, "last_right_clear", 0.0)):.3f}',
+            f'raceline_cfg={"ON" if self.use_race_line_planner else "OFF"}   '
+            f'raceline_fresh={"YES" if self.has_fresh_race_path() else "NO"}   '
+            f'raceline_used={"YES" if self.last_ref_source == "planner" else "NO"}',
+            f'raceline_reason={self.last_raceline_reject_reason} '
+            f'age={self.last_raceline_path_age_s:.2f}s '
+            f'dist={self.last_raceline_nearest_dist_m:.2f}m '
+            f'hdg={self.last_raceline_heading_err_rad:.2f}rad '
+            f'hdg_fwd={self.last_raceline_heading_err_forward_rad:.2f}rad '
+            f'hdg_rev={self.last_raceline_heading_err_reverse_rad:.2f}rad '
+            f'front={self.last_raceline_front_ratio:.2f}/{self.raceline_front_ratio_min:.2f} '
+            f'front_near={self.last_raceline_front_near_ratio:.2f}/{self.raceline_front_near_ratio_min:.2f} '
+            f'dir={self.last_raceline_match_direction} '
+            f'frame={self.last_raceline_local_frame_source} '
+            f'pose={self.last_raceline_pose_source} '
+            f'pose_age={self.last_raceline_pose_age_s:.2f}s',
             f'display_x={self.display_x_max:.1f} planner_x={self.path_x_max:.1f} '
             f'solve={self.solve_time_ms_last:.2f} ms source={self.last_ref_source}',
         ]
@@ -1741,8 +2087,27 @@ class MPCNode(Node):
             cv2.putText(canvas, line, (18, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (240, 240, 240), 2)
             yy += 24
 
-        cv2.imshow(self.debug_window_name, canvas)
-        cv2.waitKey(1)
+        if self.show_opencv_debug:
+            cv2.imshow(self.debug_window_name, canvas)
+            cv2.waitKey(1)
+
+        if self.publish_mpc_debug_images and self.mpc_debug_image_pub is not None:
+            self.publish_debug_image(canvas)
+
+    def publish_debug_image(self, canvas_bgr: np.ndarray) -> None:
+        if self.mpc_debug_image_pub is None:
+            return
+        # canvas_bgr is a BGR uint8 image from OpenCV.
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = ''
+        msg.height = int(canvas_bgr.shape[0])
+        msg.width = int(canvas_bgr.shape[1])
+        msg.encoding = 'bgr8'
+        msg.is_bigendian = 0
+        msg.step = int(canvas_bgr.shape[1] * canvas_bgr.shape[2])
+        msg.data = canvas_bgr.tobytes()
+        self.mpc_debug_image_pub.publish(msg)
 
     # Output
     def publish_drive(self, speed: float, steering_angle: float) -> None:

@@ -1,3 +1,0 @@
-ros2 bag play ~/bags/my_test -r 1.0
-
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml

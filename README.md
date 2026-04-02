@@ -1,22 +1,6 @@
-# MPC #
+This is the branch that can successfully run in sim. Replace levine map with `./levine.png` to have best performace.
 
-Describes what we need to do
+To run in sim, use 
+ros2 launch milestones race_line_stack.launch.py sim:=true odom_topic:=/ego_racecar/odom map_window_size:=1000 <- (change it based on the setting of the sim map)
 
-## To-do ##
-
-**Minimum-Time Optimization:** Time based optimization, requires a track map
-* **Dynamic Model:** Account for vehicle sliding
-    + **Tire slip angle:** Difference between car travel heading and steering angle
-    + **Pacejka Formulae:** Calculate maximum friction before loss of grip
-    + **Weight Transfer:** Account for vehicle acceleration changing the car's center of mass and grip profile
-* **Three-pronged approach:** Three separate nodes to reduce latency, each node has its own package to facilitate testing (building one node instead of three), and to manage dependency differences between different nodes
-    + **Perception and State Estimation:** Receives IMU, odometry, LiDAR, camera input, high refresh rate
-    + **Path Planner:** Keep track of track limits and reference points, static, avoid constant reloads of map
-    + **Control:** Receives data from other two nodes, executes optimizer code
-* **Build the map (required):** Use a gap follow algorithm to record a path and smooth LiDAR points into continuous boundaries
-
-
-### Easier Alternatives ###
-
-**Reference Path Tracking:** Optimize for the most effective path, considering grip levels  
-**Dynamic Window Approach:** Optimize cost function (time) based on obstacle position and velocity
+It really requires a lot of computation power, the larger the map is the power is needed. By using 16 cores of cpu and 10 gige of memory, it should be able to run under 1000 px map.
