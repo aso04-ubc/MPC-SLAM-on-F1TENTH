@@ -39,8 +39,12 @@ def occupancy_data_to_gray_image(
     top_down = np.flipud(grid)
 
     gray = np.full((height, width), 127, dtype=np.uint8)
-    gray[top_down >= occupied_threshold] = 0
-    gray[top_down == 0] = 255
+    unknown = top_down < 0
+    gray[unknown] = 127
+    
+    known = ~unknown
+    gray[known & (top_down >= occupied_threshold)] = 0
+    gray[known & (top_down < occupied_threshold)] = 255
     return gray
 
 
