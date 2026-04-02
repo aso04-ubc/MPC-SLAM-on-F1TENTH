@@ -192,7 +192,7 @@ class RaceLinePlannerNode(Node):
                 self.get_logger().warn('Waiting for map on /mapping/occupancy_grid...')
                 self.last_warn_no_map_s = now_s
             return
-
+        self.get_logger().error(f"Freshness{self.map_is_fresh(now_s)}")
         if not self.map_is_fresh(now_s):
             if now_s - self.last_warn_stale_map_s > 1.5:
                 self.get_logger().warn('Map is stale; reusing last good path if available.')

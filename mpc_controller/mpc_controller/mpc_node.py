@@ -53,23 +53,23 @@ class MPCNode(Node):
                 ('scan_topic', '/scan'),
                 ('race_line_topic', '/race_line/global_path'),
                 ('map_pose_topic', '/mapping/fused_pose'),
-                ('use_map_pose_for_race_line', True),
+                ('use_map_pose_for_race_line', False),
                 ('map_pose_stale_timeout_s', 0.75),
                 ('control_rate_hz', 30.0),
                 ('sim', True),
-                ('use_race_line_planner', True),
+                ('use_race_line_planner', False),
                 ('path_stale_timeout_s', 2.0),
                 ('max_path_lateral_error_m', 2.0),
 
-                ('dt', 0.05),
+                ('dt', 0.06),
                 ('horizon', 11),
                 ('wheelbase', 0.50),
 
-                ('max_speed', 4.0),
+                ('max_speed', 3.5),
                 ('min_speed', 0.0),
-                ('straight_speed', 4.0),
-                ('corner_speed_cap', 3.5),
-                ('hard_stop_distance', 0.32),
+                ('straight_speed', 3.5),
+                ('corner_speed_cap', 3.0),
+                ('hard_stop_distance', 0.20),
 
                 ('max_accel', 20.0),
                 ('min_accel', -20.0),
@@ -104,7 +104,7 @@ class MPCNode(Node):
                 ('effective_goal_front_gain', 0.85),
 
                 # Planner corridor
-                ('path_x_max', 1.3),
+                ('path_x_max', 1.2),
                 ('path_y_limit', 1.1),
                 ('corridor_bin_half_width', 0.18),
                 ('corridor_margin', 0.08),
@@ -138,10 +138,10 @@ class MPCNode(Node):
                 ('terminal_goal_blend_max', 0.10),
 
                 # Speed shaping
-                ('speed_target_angle_gain', 2.00),
+                ('speed_target_angle_gain', 1.50),
                 ('speed_curvature_gain', 3.0),
-                ('speed_front_clearance_gain', 3.0),
-                ('speed_width_gain', 4.5),
+                ('speed_front_clearance_gain', 2.8),
+                ('speed_width_gain', 4.0),
 
                 # State tracking cost
                 ('q_x', 10.0),
@@ -167,7 +167,7 @@ class MPCNode(Node):
                 ('slack_weight', 12000.0),
 
                 # OpenCV debug
-                ('show_opencv_debug', True),
+                ('show_opencv_debug', False),
                 ('debug_canvas_width', 1500),
                 ('debug_canvas_height', 980),
                 ('debug_pixels_per_meter', 170.0),
@@ -885,10 +885,13 @@ class MPCNode(Node):
         front_min: float,
     ) -> Optional[dict]:
         if self.state is None or not self.has_fresh_race_path():
+            self.get_logger().error("State failed")
             return None
         if self.race_path_xy is None or self.race_path_s is None or self.race_path_yaw is None:
+            self.get_logger().error("race path failed")
             return None
         if self.race_path_total_s <= 1.0:
+            self.get_logger().error("race path total failed")
             return None
 
         path_pose = self.path_reference_pose_xy_yaw()
@@ -901,6 +904,7 @@ class MPCNode(Node):
         dist = np.hypot(dxy[:, 0], dxy[:, 1])
         idx = int(np.argmin(dist))
         if float(dist[idx]) > self.max_path_lateral_error_m:
+            self.get_logger().error("max path lateral error")
             return None
 
         heading_err = abs(self.wrap_angle(float(self.race_path_yaw[idx]) - pyaw))
