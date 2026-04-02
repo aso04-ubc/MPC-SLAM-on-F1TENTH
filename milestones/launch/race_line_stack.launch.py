@@ -31,7 +31,7 @@ def generate_launch_description():
                 {'map_topic': '/mapping/occupancy_grid'},
                 {'pose_topic': '/mapping/fused_pose'},
                 {'map_publish_rate_hz': 2.0},
-                {'pose_publish_rate_hz': 2.0},
+                {'pose_publish_rate_hz': 30.0},
                 {'map_update_rate': 0.05},
                 {'map_update_rate_obstacle': 0.05},
                 {'map_update_rate_free': 0.08},

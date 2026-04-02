@@ -91,7 +91,7 @@ class LiveMapperNode(Node):
                 ('pose_topic', '/mapping/fused_pose'),
                 ('map_frame_id', 'map'),
                 ('map_publish_rate_hz', 2.0),
-                ('pose_publish_rate_hz', 2.0),
+                ('pose_publish_rate_hz', 30.0),
                 ('map_window_size', 1000),
                 ('map_scale_px_per_m', 40.0),
                 ('map_update_rate', 0.05),
@@ -104,7 +104,6 @@ class LiveMapperNode(Node):
                 ('occ_thresh', 90),
                 ('scan_max_range_m', 1.0),
                 ('scan_trim_count', 80),
-                # 0: 激光扇区与调试黄色箭头（车体前进方向）一致；π 适用于激光坐标系与车头相反时装配
                 ('scan_angle_offset_rad', 0.0),
                 ('track_width_assumption_enabled', True),
                 ('track_width_init_m', 1.0),
