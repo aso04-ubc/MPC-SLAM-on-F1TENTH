@@ -11,7 +11,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Image, Imu, LaserScan
 
 from planning_pkg.race_line_core import gray_image_to_occupancy_data
 
@@ -91,7 +91,7 @@ class LiveMapperNode(Node):
                 ('pose_topic', '/mapping/fused_pose'),
                 ('map_frame_id', 'map'),
                 ('map_publish_rate_hz', 2.0),
-                ('pose_publish_rate_hz', 30.0),
+                ('pose_publish_rate_hz', 50.0),
                 ('map_window_size', 1000),
                 ('map_scale_px_per_m', 40.0),
                 ('map_update_rate', 0.05),
@@ -102,7 +102,7 @@ class LiveMapperNode(Node):
                 ('virtual_fill_close_kernel_px', 7),
                 ('free_thresh', 200),
                 ('occ_thresh', 90),
-                ('scan_max_range_m', 1.0),
+                ('scan_max_range_m', 2.0),
                 ('scan_trim_count', 80),
                 ('scan_angle_offset_rad', 0.0),
                 ('track_width_assumption_enabled', True),
@@ -187,7 +187,7 @@ class LiveMapperNode(Node):
         self.icp_accept_dist_max = float(self.get_parameter('icp_accept_dist_max').value)
         self.icp_accept_yaw_max = float(self.get_parameter('icp_accept_yaw_max').value)
 
-        self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value) and self.sim
+        self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
 
         self.cx = self.window_size // 2
         self.cy = self.window_size // 2
@@ -216,13 +216,15 @@ class LiveMapperNode(Node):
 
         self.map_pub = self.create_publisher(OccupancyGrid, self.map_topic, 1)
         self.pose_pub = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.debug_image_pub = self.create_publisher(Image, '/live_mapper/debug_image', 1)
 
         self.create_timer(1.0 / max(0.1, self.map_publish_rate_hz), self.publish_map)
         self.create_timer(1.0 / max(0.1, self.pose_publish_rate_hz), self.publish_pose)
 
         if self.show_opencv_debug:
-            cv2.namedWindow('Live Mapper Debug', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Live Mapper Debug', 1000, 1000)
+            if self.sim:
+                cv2.namedWindow('Live Mapper Debug', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('Live Mapper Debug', 1000, 1000)
             self.create_timer(0.1, self.show_debug)
 
         self.get_logger().info(
@@ -690,8 +692,20 @@ class LiveMapperNode(Node):
             2,
         )
 
-        cv2.imshow('Live Mapper Debug', canvas)
-        cv2.waitKey(1)
+        if self.sim:
+            cv2.imshow('Live Mapper Debug', canvas)
+            cv2.waitKey(1)
+        else:
+            self.debug_image_pub.publish(self._numpy_to_image_msg(canvas))
+
+    def _numpy_to_image_msg(self, img: np.ndarray) -> Image:
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.height, msg.width = img.shape[:2]
+        msg.encoding = 'bgr8'
+        msg.step = img.shape[1] * 3
+        msg.data = img.tobytes()
+        return msg
 
 
 def main(args=None) -> None:
@@ -702,7 +716,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        if node.show_opencv_debug:
+        if node.show_opencv_debug and node.sim:
             cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()

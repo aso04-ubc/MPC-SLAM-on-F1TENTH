@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import time
 from typing import Optional
 
@@ -10,6 +11,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
+from sensor_msgs.msg import Image
 from visualization_msgs.msg import Marker, MarkerArray
 
 from planning_pkg.race_line_core import (
@@ -77,6 +79,7 @@ class RaceLinePlannerNode(Node):
 
         self.path_pub = self.create_publisher(Path, self.path_topic, 1)
         self.marker_pub = self.create_publisher(MarkerArray, self.debug_marker_topic, 1)
+        self.debug_image_pub = self.create_publisher(Image, '/race_line/debug_image', 1)
 
         self.map_sub = self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, 1)
         self.pose_sub = self.create_subscription(PoseStamped, self.pose_topic, self.pose_callback, 10)
@@ -97,6 +100,13 @@ class RaceLinePlannerNode(Node):
         self.last_warn_no_map_s = 0.0
         self.last_warn_stale_map_s = 0.0
         self.last_warn_stale_pose_s = 0.0
+
+        self.first_lap_complete = False
+        self.start_pose_xy: Optional[tuple] = None
+        self.last_pose_xy: Optional[tuple] = None
+        self.total_distance_traveled = 0.0
+        self.min_lap_distance_m = 5.0
+        self.loop_closure_radius_m = 1.5
 
         self.window_name = 'Race Line Planner Debug'
         if self.sim:
@@ -141,6 +151,29 @@ class RaceLinePlannerNode(Node):
         self.latest_pose = msg
         self.latest_pose_rx_time_s = self.now_seconds()
 
+        px = float(msg.pose.position.x)
+        py = float(msg.pose.position.y)
+
+        if self.start_pose_xy is None:
+            self.start_pose_xy = (px, py)
+            self.last_pose_xy = (px, py)
+            return
+
+        if self.last_pose_xy is not None:
+            dx = px - self.last_pose_xy[0]
+            dy = py - self.last_pose_xy[1]
+            self.total_distance_traveled += math.hypot(dx, dy)
+        self.last_pose_xy = (px, py)
+
+        if not self.first_lap_complete:
+            dist_to_start = math.hypot(px - self.start_pose_xy[0], py - self.start_pose_xy[1])
+            if self.total_distance_traveled >= self.min_lap_distance_m and dist_to_start <= self.loop_closure_radius_m:
+                self.first_lap_complete = True
+                self.get_logger().info(
+                    f'First lap complete (traveled {self.total_distance_traveled:.1f} m). '
+                    'Now publishing reference road.'
+                )
+
     def map_is_fresh(self, now_s: float) -> bool:
         if self.latest_map_gray is None:
             return False
@@ -164,7 +197,7 @@ class RaceLinePlannerNode(Node):
             if now_s - self.last_warn_stale_map_s > 1.5:
                 self.get_logger().warn('Map is stale; reusing last good path if available.')
                 self.last_warn_stale_map_s = now_s
-            if self.last_good_path is not None:
+            if self.first_lap_complete and self.last_good_path is not None:
                 msg = self.last_good_path
                 msg.header.stamp = self.get_clock().now().to_msg()
                 self.path_pub.publish(msg)
@@ -190,7 +223,7 @@ class RaceLinePlannerNode(Node):
             )
         except Exception as exc:
             self.get_logger().error(f'Race line planning failed: {exc}')
-            if self.last_good_path is not None:
+            if self.first_lap_complete and self.last_good_path is not None:
                 msg = self.last_good_path
                 msg.header.stamp = self.get_clock().now().to_msg()
                 self.path_pub.publish(msg)
@@ -227,12 +260,13 @@ class RaceLinePlannerNode(Node):
                 self.last_warn_stale_pose_s = now_s
 
         self.last_plan = plan
-        path_msg = self.publish_path(plan)
-        self.last_good_path = path_msg
 
-        if self.sim:
-            self.draw_debug(plan)
-        else:
+        if self.first_lap_complete:
+            path_msg = self.publish_path(plan)
+            self.last_good_path = path_msg
+
+        self.draw_debug(plan)
+        if not self.sim:
             self.publish_markers(plan)
 
         self.iteration += 1
@@ -355,8 +389,20 @@ class RaceLinePlannerNode(Node):
         )
         cv2.putText(canvas, text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (30, 30, 255), 2)
 
-        cv2.imshow(self.window_name, canvas)
-        cv2.waitKey(1)
+        if self.sim:
+            cv2.imshow(self.window_name, canvas)
+            cv2.waitKey(1)
+        else:
+            self.debug_image_pub.publish(self._numpy_to_image_msg(canvas))
+
+    def _numpy_to_image_msg(self, img: np.ndarray) -> Image:
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.height, msg.width = img.shape[:2]
+        msg.encoding = 'bgr8'
+        msg.step = img.shape[1] * 3
+        msg.data = img.tobytes()
+        return msg
 
 
 def main(args=None) -> None:

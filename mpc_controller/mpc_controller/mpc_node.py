@@ -29,7 +29,7 @@ from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 
 from mpc_controller.gap_utils import GapFollowAlgo
 
@@ -62,17 +62,17 @@ class MPCNode(Node):
                 ('max_path_lateral_error_m', 2.0),
 
                 ('dt', 0.05),
-                ('horizon', 13),
+                ('horizon', 11),
                 ('wheelbase', 0.50),
 
-                ('max_speed', 3.5),
+                ('max_speed', 4.0),
                 ('min_speed', 0.0),
-                ('straight_speed', 3.5),
-                ('corner_speed_cap', 2.0),
+                ('straight_speed', 4.0),
+                ('corner_speed_cap', 3.5),
                 ('hard_stop_distance', 0.32),
 
-                ('max_accel', 10.0),
-                ('min_accel', -5.0),
+                ('max_accel', 20.0),
+                ('min_accel', -20.0),
                 ('max_steer', 0.36),
                 ('max_ddelta', 0.024),
 
@@ -83,10 +83,10 @@ class MPCNode(Node):
                 ('steering_output_sign', 1.0),
 
                 # FTG
-                ('ftg_max_range', 3.5),
+                ('ftg_max_range', 3.0),
                 ('ftg_min_safe_distance', 0.25),
                 ('ftg_car_width', 0.35),
-                ('ftg_disparity_threshold', 0.7),
+                ('ftg_disparity_threshold', 0.8),
                 ('ftg_smoothing_window_size', 10),
 
                 # Goal filtering
@@ -104,12 +104,12 @@ class MPCNode(Node):
                 ('effective_goal_front_gain', 0.85),
 
                 # Planner corridor
-                ('path_x_max', 1.65),
-                ('path_y_limit', 1.7),
+                ('path_x_max', 1.3),
+                ('path_y_limit', 1.1),
                 ('corridor_bin_half_width', 0.18),
                 ('corridor_margin', 0.08),
                 ('corridor_min_half_width', 0.18),
-                ('corridor_smooth_passes', 2),
+                ('corridor_smooth_passes', 5),
                 ('margin_speed_gain', 0.015),
                 ('margin_steer_gain', 0.03),
 
@@ -138,10 +138,10 @@ class MPCNode(Node):
                 ('terminal_goal_blend_max', 0.10),
 
                 # Speed shaping
-                ('speed_target_angle_gain', 1.65),
-                ('speed_curvature_gain', 2.5),
-                ('speed_front_clearance_gain', 1.3),
-                ('speed_width_gain', 1.5),
+                ('speed_target_angle_gain', 2.00),
+                ('speed_curvature_gain', 3.0),
+                ('speed_front_clearance_gain', 3.0),
+                ('speed_width_gain', 4.5),
 
                 # State tracking cost
                 ('q_x', 10.0),
@@ -167,7 +167,7 @@ class MPCNode(Node):
                 ('slack_weight', 12000.0),
 
                 # OpenCV debug
-                ('show_opencv_debug', True),
+                ('show_opencv_debug', False),
                 ('debug_canvas_width', 1500),
                 ('debug_canvas_height', 980),
                 ('debug_pixels_per_meter', 170.0),
@@ -272,7 +272,6 @@ class MPCNode(Node):
         self.slack_weight = float(self.get_parameter('slack_weight').value)
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
-        self.show_opencv_debug = self.show_opencv_debug and self.sim
         self.debug_canvas_width = int(self.get_parameter('debug_canvas_width').value)
         self.debug_canvas_height = int(self.get_parameter('debug_canvas_height').value)
         self.debug_pixels_per_meter = float(self.get_parameter('debug_pixels_per_meter').value)
@@ -306,6 +305,7 @@ class MPCNode(Node):
             DriveControlMessage.BUILTIN_TOPIC_NAME_STRING,
             10,
         )
+        self.debug_image_pub = self.create_publisher(Image, '/mpc/debug_image', 1)
         self.timer = self.create_timer(
             1.0 / float(self.get_parameter('control_rate_hz').value),
             self.control_callback,
@@ -368,9 +368,9 @@ class MPCNode(Node):
         self.max_scan_buffer_size = 300  # max number of point clouds to keep
         self.icp_max_iterations = 50 if True else 15  # higher iterations for lap closure
         self.last_lap_closure_time = 0.0
-        self.has_loop_closed = False
+        self.has_loop_closed = True
 
-        if self.show_opencv_debug:
+        if self.show_opencv_debug and self.sim:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.debug_window_name, self.debug_canvas_width, self.debug_canvas_height)
 
@@ -2046,8 +2046,20 @@ class MPCNode(Node):
             cv2.putText(canvas, line, (18, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (240, 240, 240), 2)
             yy += 24
 
-        cv2.imshow(self.debug_window_name, canvas)
-        cv2.waitKey(1)
+        if self.sim:
+            cv2.imshow(self.debug_window_name, canvas)
+            cv2.waitKey(1)
+        else:
+            self.debug_image_pub.publish(self._numpy_to_image_msg(canvas))
+
+    def _numpy_to_image_msg(self, img: np.ndarray) -> Image:
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.height, msg.width = img.shape[:2]
+        msg.encoding = 'bgr8'
+        msg.step = img.shape[1] * 3
+        msg.data = img.tobytes()
+        return msg
 
     # Output
     def publish_drive(self, speed: float, steering_angle: float) -> None:
@@ -2081,7 +2093,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        if getattr(node, 'show_opencv_debug', False):
+        if getattr(node, 'show_opencv_debug', False) and getattr(node, 'sim', False):
             cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
