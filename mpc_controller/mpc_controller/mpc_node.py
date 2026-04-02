@@ -83,6 +83,7 @@ class MPCNode(Node):
                 ('ftg_car_width', 0.35),
                 ('ftg_disparity_threshold', 0.7),
                 ('ftg_smoothing_window_size', 10),
+                ('ftg_use_disparity_extender', False),
 
                 # Goal filtering
                 ('startup_straight_frames', 5),
@@ -276,16 +277,19 @@ class MPCNode(Node):
             car_width=float(self.get_parameter('ftg_car_width').value),
             disparity_threshold=float(self.get_parameter('ftg_disparity_threshold').value),
             smoothing_window_size=int(self.get_parameter('ftg_smoothing_window_size').value),
+            use_disparity_extender=bool(self.get_parameter('ftg_use_disparity_extender').value),
         )
 
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+        # f1tenth_gym_ros (and many sim bridges) use default reliable publishers; BEST_EFFORT
+        # subscriptions do not match and never receive data.
+        qos_sensors = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=10,
         )
 
-        self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos)
-        self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos)
+        self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, qos_sensors)
+        self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos_sensors)
         self.race_line_sub = self.create_subscription(Path, self.race_line_topic, self.race_line_callback, 1)
         self.drive_pub = self.create_publisher(
             DriveControlMessage,

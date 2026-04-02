@@ -19,12 +19,14 @@ class GapFollowAlgo:
         car_width=0.5,
         disparity_threshold=1.2,
         smoothing_window_size=10,
+        use_disparity_extender=False,
     ):
         self.max_range = max_range
         self.min_safe_distance = min_safe_distance
         self.car_width = car_width
         self.disparity_threshold = disparity_threshold
         self.smoothing_window_size = smoothing_window_size
+        self.use_disparity_extender = use_disparity_extender
 
         self.prev_angle = 0.0
         self.prev_idx = None
@@ -47,7 +49,10 @@ class GapFollowAlgo:
             target_angle, best_idx, target_distance
         """
         processed, cropped_angles = self._preprocess_ranges(ranges, angle_min, angle_increment)
-        extended = self._apply_disparity_extender(processed, angle_increment)
+        if self.use_disparity_extender:
+            extended = self._apply_disparity_extender(processed, angle_increment)
+        else:
+            extended = processed.copy()
 
         n = len(extended)
         if n == 0:

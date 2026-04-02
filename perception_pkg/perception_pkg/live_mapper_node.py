@@ -102,7 +102,8 @@ class LiveMapperNode(Node):
                 ('virtual_fill_close_kernel_px', 7),
                 ('free_thresh', 200),
                 ('occ_thresh', 90),
-                ('scan_max_range_m', 1.0),
+                # Cap ranges used for mapping (m); was 1.0 and discarded almost all gym LiDAR.
+                ('scan_max_range_m', 12.0),
                 ('scan_trim_count', 80),
                 ('scan_angle_offset_rad', math.pi),
                 ('track_width_assumption_enabled', True),
@@ -204,10 +205,18 @@ class LiveMapperNode(Node):
 
         self.odom_ready = False
 
+        if self.sim:
+            # f1tenth_gym_ros has no IMU; without bias the node would never fuse scans.
+            self.imu_bias_z = 0.0
+            self.get_logger().info(
+                'sim=True: IMU calibration skipped; pose comes from odometry (gym-compatible).'
+            )
+
+        # Match gym_bridge default publishers (reliable, depth 10); BEST_EFFORT does not match.
         qos_sensor = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=10,
         )
 
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, qos_sensor)
@@ -234,6 +243,9 @@ class LiveMapperNode(Node):
         return float(sec) + float(nsec) * 1e-9
 
     def imu_callback(self, msg: Imu) -> None:
+        if self.sim:
+            return
+
         ts = self.msg_time(msg.header.stamp.sec, msg.header.stamp.nanosec)
 
         gyro_z = float(msg.angular_velocity.z)
@@ -260,6 +272,15 @@ class LiveMapperNode(Node):
 
     def odom_callback(self, msg: Odometry) -> None:
         ts = self.msg_time(msg.header.stamp.sec, msg.header.stamp.nanosec)
+
+        if self.sim:
+            # Gym odometry is already a consistent map-frame pose; do not dead-reckon from speed.
+            self.odom_ready = True
+            self.fused_pose['x'] = float(msg.pose.pose.position.x)
+            self.fused_pose['y'] = float(msg.pose.pose.position.y)
+            self.fused_pose['yaw'] = get_yaw_from_quat(msg.pose.pose.orientation)
+            self.last_odom_time = ts
+            return
 
         if not self.odom_ready:
             self.odom_ready = True

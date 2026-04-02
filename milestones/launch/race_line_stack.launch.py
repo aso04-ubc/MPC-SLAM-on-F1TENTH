@@ -10,13 +10,20 @@ def generate_launch_description():
     odom_topic = LaunchConfiguration('odom_topic')
     imu_topic = LaunchConfiguration('imu_topic')
     scan_topic = LaunchConfiguration('scan_topic')
+    scan_max_range_m = LaunchConfiguration('scan_max_range_m')
 
     return LaunchDescription([
         DeclareLaunchArgument('sim', default_value='true'),
         DeclareLaunchArgument('use_race_line_planner', default_value='true'),
-        DeclareLaunchArgument('odom_topic', default_value='/odom'),
+        # f1tenth_gym_ros publishes on /ego_racecar/odom (see config/sim.yaml). Bags often use /odom.
+        DeclareLaunchArgument('odom_topic', default_value='/ego_racecar/odom'),
         DeclareLaunchArgument('imu_topic', default_value='/sensors/imu/raw'),
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
+        DeclareLaunchArgument(
+            'scan_max_range_m',
+            default_value='12.0',
+            description='Max LiDAR range (m) used for live mapping; increase for longer sight lines.',
+        ),
 
         Node(
             package='perception_pkg',
@@ -28,6 +35,7 @@ def generate_launch_description():
                 {'odom_topic': odom_topic},
                 {'scan_topic': scan_topic},
                 {'imu_topic': imu_topic},
+                {'scan_max_range_m': scan_max_range_m},
                 {'map_topic': '/mapping/occupancy_grid'},
                 {'pose_topic': '/mapping/fused_pose'},
                 {'map_publish_rate_hz': 2.0},
@@ -61,8 +69,8 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[
                 {'sim': sim},
-                {'ttc_threshold': 0.60},
-                {'distance_threshold': 0.30},
+                {'ttc_threshold': 0.0},
+                {'distance_threshold': 0.0},
             ],
         ),
 
@@ -90,6 +98,7 @@ def generate_launch_description():
                 {'sim': sim},
                 {'use_race_line_planner': use_race_line_planner},
                 {'odom_topic': odom_topic},
+                {'scan_topic': scan_topic},
             ],
         ),
     ])
