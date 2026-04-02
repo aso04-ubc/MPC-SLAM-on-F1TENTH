@@ -486,6 +486,26 @@ class RaceLinePlannerNode(Node):
         """Publish the precomputed path as a ROS Path message."""
         if self.precomputed_xy is None or self.precomputed_yaw is None:
             return
+        
+        now_s = self.now_seconds()
+        race_pos = self.precomputed_xy.copy()
+        race_yaw = self.precomputed_yaw.copy()
+
+        if self.pose_reindex_enabled and self.pose_is_fresh(now_s):
+            if self.latest_pose is not None:
+                pose = self.latest_pose.pose
+                q = pose.orientation
+                pose_yaw = np.arctan2(2.0 * (q.w*q.z + q.x+q.y), 1.0 - 2.0 *(q.y*q.y + q.z*q.z))
+
+                race_pos, race_yaw, _ = reindex_closed_raceline_by_pose(
+                    raceline_xy=self.precomputed_xy,
+                    yaw=self.precomputed_yaw,
+                    speed_profile=self.precomputed_speeds,
+                    pose_x=float(pose.position.x),
+                    pose_y=float(pose.position.y),
+                    pose_yaw=float(pose_yaw),
+                    enforce_heading_alignment=True
+                )
 
         path = Path()
         path.header.stamp = self.get_clock().now().to_msg()

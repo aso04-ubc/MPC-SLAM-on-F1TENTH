@@ -11,7 +11,8 @@
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>planning_pkg</depend>
+  <build_depend>planning_pkg</build_depend>
+  <exec_depend>planning_pkg</exec_depend>
 
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
