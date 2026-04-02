@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import osqp
 import scipy.sparse as sp
+from scipy.spatial import KDTree
 
 import rclpy
 from rclpy.node import Node
@@ -336,6 +337,20 @@ class MPCNode(Node):
         self.last_path_horizon_local = None
         self.last_ref_source = 'ftg'
 
+        # loop closure variables
+        self.start_anchor_points: Optional[np.ndarray] = None
+        self.scan_points_buffer: list = []  # Buffer of scan points in global frame for ICP matching
+        self.total_dist_traveled = 0.0
+        self.last_odom_x = 0.0
+        self.last_odom_y = 0.0
+        self.last_icp_time = 0.0
+        self.icp_interval = 0.5  # seconds between ICP attempts
+        self.min_lap_distance = 5.0  # meters - don't reset until we've driven at least this much
+        self.reset_threshold_radius = 0.5  # meters - how close to origin to trigger reset
+        self.max_scan_buffer_size = 300  # max number of point clouds to keep
+        self.icp_max_iterations = 50 if True else 15  # higher iterations for lap closure
+        self.last_lap_closure_time = 0.0
+
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.debug_window_name, self.debug_canvas_width, self.debug_canvas_height)
@@ -360,10 +375,230 @@ class MPCNode(Node):
         else:
             speed = 0.0
 
+        # Track distance traveled for lap detection
+        if self.last_odom_x != 0.0 or self.last_odom_y != 0.0:
+            dx = x - self.last_odom_x
+            dy = y - self.last_odom_y
+            self.total_dist_traveled += math.hypot(dx, dy)
+        
+        self.last_odom_x = x
+        self.last_odom_y = y
         self.state = VehicleState(x=x, y=y, yaw=yaw, speed=speed)
+
+    def process_icp_loop_closure(self) -> None:
+        """
+        Detects lap completion and applies ICP-based heading correction.
+        Only applies lateral position + yaw corrections (no forward/backward jump).
+        """
+        if self.state is None or self.last_scan is None:
+            return
+        
+        current_time = self.now_seconds()
+        
+        # --- STEP A: Save the Start Anchor ---
+        if self.start_anchor_points is None and 0.2 < self.total_dist_traveled < 1.0:
+            anchor_points = self.extract_scan_points_global(self.last_scan)
+            if anchor_points is not None and len(anchor_points) > 15:
+                self.start_anchor_points = anchor_points.copy()
+                self.get_logger().info(
+                    f"⚓ Anchor Saved at Yaw: {math.degrees(self.state.yaw):.1f}°. Ground truth reference."
+                )
+        
+        # Add current scan to buffer for ICP matching
+        scan_points = self.extract_scan_points_global(self.last_scan)
+        if scan_points is not None and len(scan_points) > 15:
+            self.scan_points_buffer.append(scan_points)
+            if len(self.scan_points_buffer) > self.max_scan_buffer_size:
+                self.scan_points_buffer.pop(0)  # FIFO: remove oldest
+        
+        # --- STEP B: Detect Lap Completion ---
+        dist_to_origin = math.hypot(self.state.x, self.state.y)
+        do_heading_reset = (
+            self.total_dist_traveled > self.min_lap_distance and 
+            dist_to_origin < self.reset_threshold_radius
+        )
+        
+        # --- STEP C: ICP Loop Closure ---
+        if (current_time - self.last_icp_time) >= self.icp_interval:
+            
+            if do_heading_reset and self.start_anchor_points is not None:
+                # MATCH AGAINST ORIGINAL ANCHOR (Loop Closure / Heading Reset)
+                ref_points = self.start_anchor_points
+                iters = 50  # Higher iterations for loop closure
+                
+                if len(ref_points) > 15:
+                    current_pose_dict = {'x': self.state.x, 'y': self.state.y, 'yaw': self.state.yaw}
+                    corrected_x, corrected_y, corrected_yaw = self.icp_correct_pose(
+                        scan_points if scan_points is not None else np.zeros((15, 2)),
+                        ref_points,
+                        current_pose_dict,
+                        max_iterations=iters,
+                    )
+                    
+                    delta_dist = math.hypot(
+                        corrected_x - self.state.x, 
+                        corrected_y - self.state.y
+                    )
+                    delta_yaw = abs(self.wrap_angle(corrected_yaw - self.state.yaw))
+                    
+                    if scan_points is not None:
+                        # Apply ONLY lateral shift + yaw correction (no forward/backward jump)
+                        dx = corrected_x - self.state.x
+                        dy = corrected_y - self.state.y
+                        
+                        # Define sideways axis based on corrected heading
+                        side_vector_x = -math.sin(corrected_yaw)
+                        side_vector_y = math.cos(corrected_yaw)
+                        
+                        # Project jump onto sideways axis
+                        lateral_shift = (dx * side_vector_x) + (dy * side_vector_y)
+                        
+                        # Apply only lateral shift
+                        self.state.x += lateral_shift * side_vector_x
+                        self.state.y += lateral_shift * side_vector_y
+                        
+                        # Apply yaw correction
+                        self.state.yaw = self.wrap_angle(corrected_yaw)
+                        
+                        self.get_logger().info(
+                            f"✅ Loop Closed! Lateral shift: {lateral_shift:.3f}m, Yaw: {delta_yaw:.3f}rad"
+                        )
+                        self.last_lap_closure_time = current_time
+            
+            elif len(self.scan_points_buffer) > 3 and scan_points is not None:
+                # MATCH AGAINST MAP BUFFER (Standard SLAM ICP)
+                # Combine recent scans into a reference map
+                map_points = np.vstack(self.scan_points_buffer[-5:])  # Use recent 5 scans
+                
+                if len(map_points) > 30:
+                    current_pose_dict = {'x': self.state.x, 'y': self.state.y, 'yaw': self.state.yaw}
+                    try:
+                        corrected_x, corrected_y, corrected_yaw = self.icp_correct_pose(
+                            scan_points,
+                            map_points,
+                            current_pose_dict,
+                            max_iterations=15,
+                        )
+                        
+                        delta_dist = math.hypot(
+                            corrected_x - self.state.x, 
+                            corrected_y - self.state.y
+                        )
+                        delta_yaw = abs(self.wrap_angle(corrected_yaw - self.state.yaw))
+                        
+                        # For standard SLAM, only accept tiny corrections (< 10cm, < 0.1rad)
+                        if delta_dist < 0.10 and delta_yaw < 0.1:
+                            self.state.x = corrected_x
+                            self.state.y = corrected_y
+                            self.state.yaw = self.wrap_angle(corrected_yaw)
+                            self.get_logger().debug(
+                                f"SLAM correction: Dist: {delta_dist:.3f}m, Yaw: {delta_yaw:.3f}rad"
+                            )
+                    except Exception as e:
+                        self.get_logger().debug(f"ICP failed: {e}")
+            
+            self.last_icp_time = current_time
 
     def scan_callback(self, msg: LaserScan) -> None:
         self.last_scan = msg
+
+    # icp helper functions
+
+    @staticmethod
+    def wrap_angle(angle: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    def icp_correct_pose(self, local_points: np.ndarray, map_points: np.ndarray, 
+                         current_pose_dict: dict, max_iterations: int = 10) -> Tuple[float, float, float]:
+        """
+        2D ICP using SVD to match current local laser scan to existing global map.
+        Returns corrected (x, y, yaw).
+        """
+        yaw = current_pose_dict['yaw']
+        tx, ty = current_pose_dict['x'], current_pose_dict['y']
+        
+        # Project local laser points to global frame using uncorrected pose guess
+        R = np.array([[math.cos(yaw), -math.sin(yaw)],
+                      [math.sin(yaw),  math.cos(yaw)]])
+        global_pts = np.dot(local_points, R.T) + np.array([tx, ty])
+        
+        tree = KDTree(map_points)
+        
+        for _ in range(max_iterations):
+            distances, indices = tree.query(global_pts)
+            
+            # Filter points too far away (> 30cm) to ignore noise
+            valid = distances < 0.3
+            if np.sum(valid) < 15:
+                break  # Not enough overlapping points
+            
+            p_src = global_pts[valid]
+            p_dst = map_points[indices[valid]]
+            
+            # Calculate centroids and SVD for rotation
+            c_src = np.mean(p_src, axis=0)
+            c_dst = np.mean(p_dst, axis=0)
+            
+            H = np.dot((p_src - c_src).T, (p_dst - c_dst))
+            U, S, Vt = np.linalg.svd(H)
+            R_delta = np.dot(Vt.T, U.T)
+            
+            # Prevent reflection matrix
+            if np.linalg.det(R_delta) < 0:
+                Vt[1, :] *= -1
+                R_delta = np.dot(Vt.T, U.T)
+            
+            t_delta = c_dst - np.dot(R_delta, c_src)
+            
+            # Apply correction for next iteration
+            global_pts = np.dot(global_pts, R_delta.T) + t_delta
+            
+            # Apply correction to pose
+            pose_pt = np.dot(R_delta, np.array([tx, ty])) + t_delta
+            tx, ty = pose_pt[0], pose_pt[1]
+            yaw += math.atan2(R_delta[1, 0], R_delta[0, 0])
+        
+        return tx, ty, yaw
+
+    def extract_scan_points_global(self, msg: LaserScan) -> Optional[np.ndarray]:
+        """
+        Extract valid scan points and project to global frame using current state.
+        Returns (N, 2) array of global points.
+        """
+        if self.state is None:
+            return None
+        
+        ranges = np.array(msg.ranges)
+        angles = msg.angle_min + np.arange(len(ranges)) * msg.angle_increment
+        
+        # Trim edges (side-looking rays)
+        trim_count = 80
+        if trim_count > 0 and len(ranges) > 2 * trim_count:
+            ranges = ranges[trim_count:-trim_count]
+            angles = angles[trim_count:-trim_count]
+        
+        # Filter valid points
+        valid = (ranges > msg.range_min) & (ranges < 3.5) & np.isfinite(ranges)
+        ranges_valid = ranges[valid]
+        angles_valid = angles[valid]
+        
+        if len(ranges_valid) < 10:
+            return None
+        
+        # Convert to local frame
+        local_angles = angles_valid + math.pi
+        lx = ranges_valid * np.cos(local_angles)
+        ly = ranges_valid * np.sin(local_angles)
+        local_points = np.column_stack((lx, ly))
+        
+        # Project to global frame
+        yaw = self.state.yaw
+        R = np.array([[math.cos(yaw), -math.sin(yaw)],
+                      [math.sin(yaw),  math.cos(yaw)]])
+        global_points = np.dot(local_points, R.T) + np.array([self.state.x, self.state.y])
+        
+        return global_points
 
     def race_line_callback(self, msg: Path) -> None:
         n = len(msg.poses)
@@ -411,6 +646,8 @@ class MPCNode(Node):
             return
 
         self.frame_count += 1
+
+        self.process_icp_loop_closure()
 
         ranges = np.array(self.last_scan.ranges, dtype=float)
         target_angle, _, target_distance = self.gap_algo.process_lidar_and_find_gap(
