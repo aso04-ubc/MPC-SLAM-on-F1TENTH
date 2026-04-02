@@ -368,6 +368,7 @@ class MPCNode(Node):
         self.max_scan_buffer_size = 300  # max number of point clouds to keep
         self.icp_max_iterations = 50 if True else 15  # higher iterations for lap closure
         self.last_lap_closure_time = 0.0
+        self.has_loop_closed = False
 
         if self.show_opencv_debug:
             cv2.namedWindow(self.debug_window_name, cv2.WINDOW_NORMAL)
@@ -522,6 +523,7 @@ class MPCNode(Node):
                             f"✅ Loop Closed! Lateral shift: {lateral_shift:.3f}m, Yaw: {delta_yaw:.3f}rad"
                         )
                         self.last_lap_closure_time = current_time
+                        self.has_loop_closed = True
             
             elif len(self.scan_points_buffer) > 3 and scan_points is not None:
                 # MATCH AGAINST MAP BUFFER (Standard SLAM ICP)
@@ -725,14 +727,19 @@ class MPCNode(Node):
         self.last_gap_distance = float(target_distance)
 
         problem = None
-        if self.use_race_line_planner:
+
+        if self.use_race_line_planner and self.has_loop_closed:
             problem = self.build_race_path_problem(target_angle, target_distance, front_min)
             if problem is not None:
                 self.last_ref_source = 'planner'
+            else:
+                self.get_logger().debug('Race path problem not available; falling back to local MPC.')
 
         if problem is None:
             problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
             self.last_ref_source = 'ftg'
+            if self.use_race_line_planner:
+                self.get_logger().debug('Reactive local MPC active until loop closure complete.')
 
         if problem is None:
             v_cmd = 0.0
