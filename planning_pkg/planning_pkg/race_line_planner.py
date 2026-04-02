@@ -48,10 +48,18 @@ class RaceLinePlannerNode(Node):
                 ('a_lat_max', 3.0),
                 ('a_long_accel_max', 2.0),
                 ('a_long_brake_max', 4.0),
+                ('use_precomputed_path', False),
+                ('precomputed_path_file', ''),
+                ('auto_save_precomputed_path', False),
+                ('auto_save_filepath', ''),
             ],
         )
 
         self.sim = bool(self.get_parameter('sim').value)
+        self.use_precomputed_path = bool(self.get_parameter('use_precomputed_path').value)
+        self.precomputed_path_file = str(self.get_parameter('precomputed_path_file').value)
+        self.auto_save_precomputed_path = bool(self.get_parameter('auto_save_precomputed_path').value)
+        self.auto_save_filepath = str(self.get_parameter('auto_save_filepath').value)
         self.replan_rate_hz = float(self.get_parameter('replan_rate_hz').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
         self.pose_topic = str(self.get_parameter('pose_topic').value)
@@ -98,6 +106,19 @@ class RaceLinePlannerNode(Node):
         self.last_warn_stale_map_s = 0.0
         self.last_warn_stale_pose_s = 0.0
 
+        # Precomputed path data
+        self.precomputed_xy: Optional[np.ndarray] = None
+        self.precomputed_yaw: Optional[np.ndarray] = None
+        self.precomputed_speeds: Optional[np.ndarray] = None
+        self.precomputed_frame_id: str = self.frame_id_default
+
+        # Load precomputed path if enabled
+        if self.use_precomputed_path:
+            if not self.precomputed_path_file:
+                self.get_logger().error('use_precomputed_path=True but precomputed_path_file is empty')
+            else:
+                self.load_precomputed_path()
+
         self.window_name = 'Race Line Planner Debug'
         if self.sim:
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -106,8 +127,134 @@ class RaceLinePlannerNode(Node):
         timer_period = 1.0 / max(0.1, self.replan_rate_hz)
         self.timer = self.create_timer(timer_period, self.replan_callback)
 
+        mode_str = 'precomputed path' if self.use_precomputed_path else 'live SLAM planning'
+        if not self.use_precomputed_path and self.auto_save_precomputed_path:
+            mode_str += ' (auto-saving)'
+        self.get_logger().info(f'Race line planner initialized in {mode_str} mode')
+
     def now_seconds(self) -> float:
         return float(self.get_clock().now().nanoseconds) * 1e-9
+
+    def load_precomputed_path(self) -> None:
+        """Load precomputed path from JSON file."""
+        import json
+
+        try:
+            with open(self.precomputed_path_file, 'r') as f:
+                data = json.load(f)
+
+            self.precomputed_xy = np.array(data['raceline_xy'], dtype=float)
+            self.precomputed_yaw = np.array(data['yaw'], dtype=float)
+            self.precomputed_speeds = np.array(
+                data.get('speed_profile', np.ones(len(self.precomputed_xy))), dtype=float
+            )
+            self.precomputed_frame_id = data.get('frame_id', self.frame_id_default)
+
+            self.get_logger().info(
+                f'Loaded precomputed path from {self.precomputed_path_file}: '
+                f'{len(self.precomputed_xy)} waypoints'
+            )
+        except FileNotFoundError:
+            self.get_logger().error(f'Precomputed path file not found: {self.precomputed_path_file}')
+            self.use_precomputed_path = False
+        except (json.JSONDecodeError, KeyError) as e:
+            self.get_logger().error(f'Error parsing precomputed path file: {e}')
+            self.use_precomputed_path = False
+
+    def save_plan_as_precomputed(self, plan: RaceLinePlan, filepath: str) -> None:
+        """Save a RaceLinePlan as a precomputed path JSON file."""
+        import json
+
+        try:
+            precomputed_data = {
+                'raceline_xy': plan.raceline_xy.tolist(),
+                'yaw': plan.yaw.tolist(),
+                'speed_profile': plan.speed_profile.tolist(),
+                'frame_id': self.latest_map_frame_id,
+            }
+
+            with open(filepath, 'w') as f:
+                json.dump(precomputed_data, f, indent=2)
+
+            self.get_logger().info(
+                f'Saved precomputed path to {filepath} with {len(plan.raceline_xy)} waypoints'
+            )
+
+            # Also save CSV for easy debugging/visualization
+            csv_filepath = filepath.replace('.json', '.csv')
+            self.save_plan_as_csv(plan, csv_filepath)
+
+            # Also save debug image if in simulation mode
+            if self.sim:
+                img_filepath = filepath.replace('.json', '_debug.png')
+                self.save_debug_image(plan, img_filepath)
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to save precomputed path: {e}')
+
+    def save_plan_as_csv(self, plan: RaceLinePlan, filepath: str) -> None:
+        """Save a RaceLinePlan as a CSV file for easy debugging/visualization."""
+        try:
+            import csv
+
+            with open(filepath, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['index', 'x', 'y', 'yaw', 'speed'])
+
+                for i, ((x, y), yaw, speed) in enumerate(zip(plan.raceline_xy, plan.yaw, plan.speed_profile)):
+                    writer.writerow([i, f'{x:.3f}', f'{y:.3f}', f'{yaw:.3f}', f'{speed:.3f}'])
+
+            self.get_logger().info(f'Saved debug CSV to {filepath}')
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to save debug CSV: {e}')
+
+    def save_debug_image(self, plan: RaceLinePlan, filepath: str) -> None:
+        """Save a debug visualization image of the planned path."""
+        try:
+            # Create the same debug canvas as draw_debug
+            canvas = cv2.cvtColor(self.latest_map_gray, cv2.COLOR_GRAY2BGR)
+
+            # Draw centerline (orange)
+            cv2.polylines(
+                canvas,
+                [np.round(plan.centerline_px).astype(np.int32).reshape(-1, 1, 2)],
+                isClosed=True,
+                color=(255, 180, 0),
+                thickness=2,
+            )
+
+            # Draw racing line (magenta)
+            cv2.polylines(
+                canvas,
+                [np.round(plan.raceline_px).astype(np.int32).reshape(-1, 1, 2)],
+                isClosed=True,
+                color=(255, 0, 255),
+                thickness=2,
+            )
+
+            # Draw current pose if available (cyan)
+            if self.latest_pose is not None:
+                pose = self.latest_pose.pose.position
+                px = int(round(self.latest_map_center_px_x + pose.y * self.latest_map_scale_px_per_m))
+                py = int(round(self.latest_map_center_px_y - pose.x * self.latest_map_scale_px_per_m))
+                if 0 <= px < canvas.shape[1] and 0 <= py < canvas.shape[0]:
+                    cv2.circle(canvas, (px, py), 5, (0, 255, 255), -1)
+
+            # Add text info
+            text = (
+                f'pts={len(plan.raceline_xy)} '
+                f'v_min={float(np.min(plan.speed_profile)):.2f} '
+                f'v_max={float(np.max(plan.speed_profile)):.2f}'
+            )
+            cv2.putText(canvas, text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (30, 30, 255), 2)
+
+            # Save the image
+            cv2.imwrite(filepath, canvas)
+            self.get_logger().info(f'Saved debug image to {filepath}')
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to save debug image: {e}')
 
     def map_callback(self, msg: OccupancyGrid) -> None:
         width = int(msg.info.width)
@@ -154,6 +301,15 @@ class RaceLinePlannerNode(Node):
     def replan_callback(self) -> None:
         now_s = self.now_seconds()
 
+        # Handle precomputed path mode
+        if self.use_precomputed_path:
+            if self.precomputed_xy is None:
+                self.get_logger().warn('Waiting for precomputed path to load...')
+                return
+            self.publish_precomputed_path()
+            return
+
+        # Handle live SLAM planning mode
         if self.latest_map_gray is None:
             if now_s - self.last_warn_no_map_s > 1.5:
                 self.get_logger().warn('Waiting for map on /mapping/occupancy_grid...')
@@ -229,6 +385,10 @@ class RaceLinePlannerNode(Node):
         self.last_plan = plan
         path_msg = self.publish_path(plan)
         self.last_good_path = path_msg
+
+        # Auto-save precomputed path if enabled
+        if self.auto_save_precomputed_path and self.auto_save_filepath:
+            self.save_plan_as_precomputed(plan, self.auto_save_filepath)
 
         if self.sim:
             self.draw_debug(plan)
@@ -321,6 +481,35 @@ class RaceLinePlannerNode(Node):
         arr = MarkerArray()
         arr.markers = [center, race]
         self.marker_pub.publish(arr)
+
+    def publish_precomputed_path(self) -> None:
+        """Publish the precomputed path as a ROS Path message."""
+        if self.precomputed_xy is None or self.precomputed_yaw is None:
+            return
+
+        path = Path()
+        path.header.stamp = self.get_clock().now().to_msg()
+        path.header.frame_id = self.precomputed_frame_id
+
+        for (x, y), yaw in zip(self.precomputed_xy, self.precomputed_yaw):
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.z = float(np.sin(0.5 * yaw))
+            pose.pose.orientation.w = float(np.cos(0.5 * yaw))
+            path.poses.append(pose)
+
+        self.path_pub.publish(path)
+        self.last_good_path = path
+
+        self.iteration += 1
+        if self.iteration % 10 == 0:
+            self.get_logger().info(
+                f'Published precomputed race line with {len(self.precomputed_xy)} points '
+                f'(from {self.precomputed_path_file})'
+            )
 
     def draw_debug(self, plan: RaceLinePlan) -> None:
         canvas = cv2.cvtColor(self.latest_map_gray, cv2.COLOR_GRAY2BGR)
