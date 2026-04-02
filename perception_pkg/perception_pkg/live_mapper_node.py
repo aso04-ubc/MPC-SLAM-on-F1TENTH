@@ -270,7 +270,7 @@ class LiveMapperNode(Node):
         if self.last_odom_time is not None:
             dt = ts - self.last_odom_time
             if 0.0 < dt < 0.5:
-                speed = float(msg.twist.twist.linear.x)
+                speed = abs(float(msg.twist.twist.linear.x))
                 dist_step = speed * dt * self.odom_scale
                 self.fused_pose['x'] += dist_step * math.cos(self.fused_pose['yaw'])
                 self.fused_pose['y'] += dist_step * math.sin(self.fused_pose['yaw'])
