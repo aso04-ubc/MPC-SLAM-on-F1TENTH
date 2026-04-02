@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -19,19 +20,21 @@ def generate_launch_description():
     safety_distance_threshold = LaunchConfiguration('safety_distance_threshold')
     reference_mode = LaunchConfiguration('reference_mode')
     path_csv = LaunchConfiguration('path_csv')
+    target_speed = LaunchConfiguration('target_speed')
+    stop_on_solver_failure = LaunchConfiguration('stop_on_solver_failure')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
         DeclareLaunchArgument(
             'params_file',
             default_value=PathJoinSubstitution(
-                [FindPackageShare('mpc_controller'), 'config', 'mpc_params.yaml']
+                [FindPackageShare('mpc_controller'), 'config', 'mpc_sim_params.yaml']
             ),
             description='Optional override for the MPC parameter file.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
-            default_value='/odom',
+            default_value='/ego_racecar/odom',
             description='Odometry topic remap for the MPC controller.',
         ),
         DeclareLaunchArgument(
@@ -41,7 +44,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'drive_topic',
-            default_value='/mpc/drive',
+            default_value='/drive',
             description='Raw Ackermann output topic remap for the MPC controller.',
         ),
         DeclareLaunchArgument(
@@ -56,12 +59,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'publish_drive_control',
-            default_value='true',
+            default_value='false',
             description='Whether to publish DriveControlMessage to the mux chain.',
         ),
         DeclareLaunchArgument(
             'enable_safety',
-            default_value='true',
+            default_value='false',
             description='Whether to launch the safety node alongside the MPC node.',
         ),
         DeclareLaunchArgument(
@@ -76,15 +79,23 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'reference_mode',
-            default_value='path_csv',
+            default_value='constant_speed',
             description='Reference source: auto, path_csv, or constant_speed.',
         ),
         DeclareLaunchArgument(
             'path_csv',
-            default_value=PathJoinSubstitution(
-                [FindPackageShare('mpc_controller'), 'config', 'example_centerline.csv']
-            ),
+            default_value='',
             description='CSV file that defines the centerline used by the MPC tracker.',
+        ),
+        DeclareLaunchArgument(
+            'target_speed',
+            default_value='1.5',
+            description='Fallback target speed used by constant_speed mode or CSVs without v_ref.',
+        ),
+        DeclareLaunchArgument(
+            'stop_on_solver_failure',
+            default_value='true',
+            description='Whether to publish a stop command when the MPC solver fails.',
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -100,11 +111,13 @@ def generate_launch_description():
             parameters=[
                 params_file,
                 {
-                    'use_sim_time': use_sim_time,
-                    'reference_mode': reference_mode,
-                    'path_csv': path_csv,
-                    'publish_drive_control': publish_drive_control,
-                    'drive_control_topic': drive_control_topic,
+                    'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+                    'reference_mode': ParameterValue(reference_mode, value_type=str),
+                    'path_csv': ParameterValue(path_csv, value_type=str),
+                    'target_speed': ParameterValue(target_speed, value_type=float),
+                    'publish_drive_control': ParameterValue(publish_drive_control, value_type=bool),
+                    'drive_control_topic': ParameterValue(drive_control_topic, value_type=str),
+                    'stop_on_solver_failure': ParameterValue(stop_on_solver_failure, value_type=bool),
                 },
             ],
             remappings=[
@@ -121,9 +134,9 @@ def generate_launch_description():
             condition=IfCondition(enable_safety),
             parameters=[
                 {
-                    'use_sim_time': use_sim_time,
-                    'ttc_threshold': safety_ttc_threshold,
-                    'distance_threshold': safety_distance_threshold,
+                    'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+                    'ttc_threshold': ParameterValue(safety_ttc_threshold, value_type=float),
+                    'distance_threshold': ParameterValue(safety_distance_threshold, value_type=float),
                 },
             ],
             remappings=[

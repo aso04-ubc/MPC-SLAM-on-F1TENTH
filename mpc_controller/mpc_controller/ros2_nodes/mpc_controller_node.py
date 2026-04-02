@@ -10,7 +10,9 @@ from typing import List, Optional, Sequence
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 
 try:
@@ -78,6 +80,7 @@ class MPCControllerNode(Node):
         self.last_control: List[float] = [0.0, 0.0]
         self.estimated_delta = 0.0
         self.previous_reference_index: Optional[int] = None
+        self.has_logged_first_odom = False
         self.path_reference: Optional[PathReference] = None
         self.path_load_error: Optional[str] = None
 
@@ -96,7 +99,7 @@ class MPCControllerNode(Node):
             Odometry,
             '/odom',
             self.odom_callback,
-            10,
+            qos_profile_sensor_data,
         )
         self.raw_drive_pub = self.create_publisher(
             AckermannDriveStamped,
@@ -117,7 +120,11 @@ class MPCControllerNode(Node):
                     10,
                 )
 
-        self.control_timer = self.create_timer(self.dt, self.control_loop)
+        self.control_timer = self.create_timer(
+            self.dt,
+            self.control_loop,
+            clock=Clock(clock_type=ClockType.STEADY_TIME),
+        )
 
         self.get_logger().info(
             'mpc_controller_node started with '
@@ -256,6 +263,15 @@ class MPCControllerNode(Node):
             self.last_odom_stamp = Time.from_msg(msg.header.stamp)
         else:
             self.last_odom_stamp = self.get_clock().now()
+
+        if not self.has_logged_first_odom:
+            self.get_logger().info(
+                'Received first odom sample: '
+                f'x={self.current_state.x:.3f}, '
+                f'y={self.current_state.y:.3f}, '
+                f'v={self.current_state.v:.3f}'
+            )
+            self.has_logged_first_odom = True
 
     def control_loop(self) -> None:
         """Run one MPC iteration."""
