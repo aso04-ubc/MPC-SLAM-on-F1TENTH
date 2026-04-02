@@ -65,6 +65,33 @@ def test_race_line_stays_within_lateral_bounds():
     assert np.all(np.abs(plan.lateral_offsets_m) <= plan.lateral_bounds_m + 1e-6)
 
 
+def test_race_line_stays_inside_drivable_mask():
+    gray, cx, cy = make_annulus_map()
+
+    plan = plan_from_map(
+        gray=gray,
+        scale_px_per_m=40.0,
+        map_center_px_x=cx,
+        map_center_px_y=cy,
+        free_thresh=200,
+        occ_thresh=90,
+        w_curvature=30.0,
+        w_smooth=8.0,
+        w_center_bias=1.0,
+        v_max=4.0,
+        a_lat_max=3.0,
+        a_long_accel_max=2.0,
+        a_long_brake_max=3.0,
+        sample_count=240,
+    )
+
+    pts = np.round(plan.raceline_px).astype(int)
+    pts[:, 0] = np.clip(pts[:, 0], 0, plan.drivable_mask.shape[1] - 1)
+    pts[:, 1] = np.clip(pts[:, 1], 0, plan.drivable_mask.shape[0] - 1)
+
+    assert np.all(plan.drivable_mask[pts[:, 1], pts[:, 0]] > 0)
+
+
 def test_speed_profile_respects_vmax():
     gray, cx, cy = make_annulus_map()
 

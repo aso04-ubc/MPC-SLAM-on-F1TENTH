@@ -27,7 +27,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from ackermann_msgs.msg import AckermannDrive, AckermannDriveStamped
 from dev_b7_interfaces.msg import DriveControlMessage
 from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 
 from mpc_controller.gap_utils import GapFollowAlgo
 
@@ -106,6 +106,9 @@ class MPCNode(Node):
                 ('corridor_margin', 0.08),
                 ('corridor_min_half_width', 0.18),
                 ('corridor_smooth_passes', 2),
+                # How much to smooth the planner reference path in the local frame.
+                # 0 keeps the planner reference as-is.
+                ('planner_ref_smooth_passes', 1),
                 ('margin_speed_gain', 0.015),
                 ('margin_steer_gain', 0.03),
 
@@ -164,6 +167,9 @@ class MPCNode(Node):
 
                 # OpenCV debug
                 ('show_opencv_debug', True),
+                # When sim=False, publish the same debug canvas as sensor_msgs/Image.
+                ('publish_debug_images', True),
+                ('mpc_debug_image_topic', '/mpc/debug_image'),
                 ('debug_canvas_width', 1500),
                 ('debug_canvas_height', 980),
                 ('debug_pixels_per_meter', 170.0),
@@ -219,6 +225,7 @@ class MPCNode(Node):
         self.corridor_margin = float(self.get_parameter('corridor_margin').value)
         self.corridor_min_half_width = float(self.get_parameter('corridor_min_half_width').value)
         self.corridor_smooth_passes = int(self.get_parameter('corridor_smooth_passes').value)
+        self.planner_ref_smooth_passes = int(self.get_parameter('planner_ref_smooth_passes').value)
         self.margin_speed_gain = float(self.get_parameter('margin_speed_gain').value)
         self.margin_steer_gain = float(self.get_parameter('margin_steer_gain').value)
 
@@ -266,6 +273,13 @@ class MPCNode(Node):
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value)
         self.show_opencv_debug = self.show_opencv_debug and self.sim
+        self.publish_mpc_debug_images = (
+            (not self.sim) and bool(self.get_parameter('publish_debug_images').value)
+        )
+        self.mpc_debug_image_topic = str(self.get_parameter('mpc_debug_image_topic').value)
+        self.mpc_debug_image_pub = None
+        if self.publish_mpc_debug_images:
+            self.mpc_debug_image_pub = self.create_publisher(Image, self.mpc_debug_image_topic, 1)
         self.debug_canvas_width = int(self.get_parameter('debug_canvas_width').value)
         self.debug_canvas_height = int(self.get_parameter('debug_canvas_height').value)
         self.debug_pixels_per_meter = float(self.get_parameter('debug_pixels_per_meter').value)
@@ -447,7 +461,7 @@ class MPCNode(Node):
             v_cmd = 0.0
             delta_cmd = self.steering_output_sign * self.prev_delta_cmd_internal
             self.publish_drive(v_cmd, delta_cmd)
-            if self.show_opencv_debug:
+            if self.show_opencv_debug or self.publish_mpc_debug_images:
                 self.draw_debug_canvas(v_cmd, delta_cmd)
             return
 
@@ -486,7 +500,7 @@ class MPCNode(Node):
 
         self.publish_drive(v_cmd, delta_cmd)
 
-        if self.show_opencv_debug:
+        if self.show_opencv_debug or self.publish_mpc_debug_images:
             self.draw_debug_canvas(v_cmd, delta_cmd)
 
     # ──────────────────────────────────────────────────────────────────
@@ -624,7 +638,7 @@ class MPCNode(Node):
         x_ref = np.maximum.accumulate(x_ref)
         x_ref = x_ref - x_ref[0]
         x_ref = np.clip(x_ref, 0.0, self.path_x_max + 0.25)
-        y_ref = self.smooth_1d(y_ref, passes=1)
+        y_ref = self.smooth_1d(y_ref, passes=self.planner_ref_smooth_passes)
 
         psi_ref = self.compute_heading_from_xy(x_ref, y_ref)
         delta_ref = self.compute_delta_ref(x_ref, y_ref, psi_ref)
@@ -1741,8 +1755,27 @@ class MPCNode(Node):
             cv2.putText(canvas, line, (18, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (240, 240, 240), 2)
             yy += 24
 
-        cv2.imshow(self.debug_window_name, canvas)
-        cv2.waitKey(1)
+        if self.show_opencv_debug:
+            cv2.imshow(self.debug_window_name, canvas)
+            cv2.waitKey(1)
+
+        if self.publish_mpc_debug_images and self.mpc_debug_image_pub is not None:
+            self.publish_debug_image(canvas)
+
+    def publish_debug_image(self, canvas_bgr: np.ndarray) -> None:
+        if self.mpc_debug_image_pub is None:
+            return
+        # canvas_bgr is a BGR uint8 image from OpenCV.
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = ''
+        msg.height = int(canvas_bgr.shape[0])
+        msg.width = int(canvas_bgr.shape[1])
+        msg.encoding = 'bgr8'
+        msg.is_bigendian = 0
+        msg.step = int(canvas_bgr.shape[1] * canvas_bgr.shape[2])
+        msg.data = canvas_bgr.tobytes()
+        self.mpc_debug_image_pub.publish(msg)
 
     # Output
     def publish_drive(self, speed: float, steering_angle: float) -> None:

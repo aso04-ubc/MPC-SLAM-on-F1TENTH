@@ -11,17 +11,23 @@ def generate_launch_description():
     imu_topic = LaunchConfiguration('imu_topic')
     scan_topic = LaunchConfiguration('scan_topic')
     scan_max_range_m = LaunchConfiguration('scan_max_range_m')
+    map_window_size = LaunchConfiguration('map_window_size')
 
     return LaunchDescription([
-        DeclareLaunchArgument('sim', default_value='true'),
+        DeclareLaunchArgument('sim', default_value='false'),
         DeclareLaunchArgument('use_race_line_planner', default_value='true'),
         # f1tenth_gym_ros publishes on /ego_racecar/odom (see config/sim.yaml). Bags often use /odom.
-        DeclareLaunchArgument('odom_topic', default_value='/ego_racecar/odom'),
+        DeclareLaunchArgument('odom_topic', default_value='/odom'),
         DeclareLaunchArgument('imu_topic', default_value='/sensors/imu/raw'),
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
         DeclareLaunchArgument(
+            'map_window_size',
+            default_value='1600',
+            description='Occupancy map width/height in pixels.',
+        ),
+        DeclareLaunchArgument(
             'scan_max_range_m',
-            default_value='12.0',
+            default_value='2.5',
             description='Max LiDAR range (m) used for live mapping; increase for longer sight lines.',
         ),
 
@@ -35,6 +41,8 @@ def generate_launch_description():
                 {'odom_topic': odom_topic},
                 {'scan_topic': scan_topic},
                 {'imu_topic': imu_topic},
+                {'map_window_size': map_window_size},
+                {'scan_angle_offset_rad': 0.0},
                 {'scan_max_range_m': scan_max_range_m},
                 {'map_topic': '/mapping/occupancy_grid'},
                 {'pose_topic': '/mapping/fused_pose'},

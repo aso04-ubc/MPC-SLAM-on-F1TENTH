@@ -156,7 +156,11 @@ def preprocess_drivable_mask(
     return out
 
 
-def extract_centerline_from_mask(drivable_mask: np.ndarray, num_samples: int) -> np.ndarray:
+def extract_centerline_from_mask(
+    drivable_mask: np.ndarray,
+    num_samples: int,
+    centerline_smooth_passes: int = 4,
+) -> np.ndarray:
     contours, hierarchy = cv2.findContours(drivable_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
     if not contours or hierarchy is None:
         raise ValueError('Could not extract contours from drivable mask')
@@ -184,7 +188,9 @@ def extract_centerline_from_mask(drivable_mask: np.ndarray, num_samples: int) ->
         # Fallback if no hole exists: use contour itself
         centerline = outer_rs
 
-    return _smooth_closed(centerline, passes=4)
+    # Smooth the closed loop a little; this is the only smoothing we keep
+    # when using the track centerline directly as the reference.
+    return _smooth_closed(centerline, passes=centerline_smooth_passes)
 
 
 def _compute_tangent_and_normal(path_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -211,6 +217,76 @@ def _estimate_lateral_bounds(
     half_width_m = dt_px[y, x] / scale_px_per_m
     bounds = np.clip(half_width_m - margin_m, 0.05, 1.5)
     return bounds
+
+
+def _point_is_safe_in_mask(
+    point_px: np.ndarray,
+    drivable_mask: np.ndarray,
+    distance_transform_px: np.ndarray,
+    min_distance_px: float,
+) -> bool:
+    h, w = drivable_mask.shape
+    x = int(np.clip(np.round(float(point_px[0])), 0, w - 1))
+    y = int(np.clip(np.round(float(point_px[1])), 0, h - 1))
+    if drivable_mask[y, x] == 0:
+        return False
+    return float(distance_transform_px[y, x]) >= float(min_distance_px)
+
+
+def _project_point_inside_mask(
+    centerline_px: np.ndarray,
+    candidate_px: np.ndarray,
+    drivable_mask: np.ndarray,
+    distance_transform_px: np.ndarray,
+    min_distance_px: float,
+) -> np.ndarray:
+    center = np.asarray(centerline_px, dtype=float)
+    candidate = np.asarray(candidate_px, dtype=float)
+
+    if _point_is_safe_in_mask(candidate, drivable_mask, distance_transform_px, min_distance_px):
+        return candidate
+
+    if not _point_is_safe_in_mask(center, drivable_mask, distance_transform_px, min_distance_px):
+        return center
+
+    lo = 0.0
+    hi = 1.0
+    best = center.copy()
+
+    for _ in range(24):
+        mid = 0.5 * (lo + hi)
+        test = center + mid * (candidate - center)
+        if _point_is_safe_in_mask(test, drivable_mask, distance_transform_px, min_distance_px):
+            best = test
+            lo = mid
+        else:
+            hi = mid
+
+    return best
+
+
+def constrain_raceline_to_mask(
+    centerline_px: np.ndarray,
+    raceline_px: np.ndarray,
+    drivable_mask: np.ndarray,
+    min_distance_px: float = 1.0,
+) -> np.ndarray:
+    if len(centerline_px) != len(raceline_px):
+        raise ValueError('centerline_px and raceline_px must have the same length')
+
+    distance_transform_px = cv2.distanceTransform(drivable_mask, cv2.DIST_L2, 5)
+    safe_raceline = np.empty_like(raceline_px, dtype=float)
+
+    for idx, (center_pt, race_pt) in enumerate(zip(centerline_px, raceline_px)):
+        safe_raceline[idx] = _project_point_inside_mask(
+            centerline_px=np.asarray(center_pt, dtype=float),
+            candidate_px=np.asarray(race_pt, dtype=float),
+            drivable_mask=drivable_mask,
+            distance_transform_px=distance_transform_px,
+            min_distance_px=min_distance_px,
+        )
+
+    return safe_raceline
 
 
 def optimize_racing_line(
@@ -334,27 +410,51 @@ def plan_from_map(
     a_long_accel_max: float,
     a_long_brake_max: float,
     sample_count: int = 320,
+    use_centerline_raceline: bool = False,
+    centerline_smooth_passes: int = 4,
 ) -> RaceLinePlan:
     drivable_mask = preprocess_drivable_mask(
         gray,
         free_thresh=free_thresh,
         occ_thresh=occ_thresh,
     )
-    centerline_px = extract_centerline_from_mask(drivable_mask, num_samples=sample_count)
+    centerline_px = extract_centerline_from_mask(
+        drivable_mask,
+        num_samples=sample_count,
+        centerline_smooth_passes=centerline_smooth_passes,
+    )
 
     centerline_xy = pixel_to_world(centerline_px, scale_px_per_m, map_center_px_x, map_center_px_y)
 
     bounds_m = _estimate_lateral_bounds(centerline_px, drivable_mask, scale_px_per_m)
 
-    raceline_xy, offsets_m = optimize_racing_line(
-        centerline_xy=centerline_xy,
-        lateral_bounds_m=bounds_m,
-        w_curvature=w_curvature,
-        w_smooth=w_smooth,
-        w_center_bias=w_center_bias,
-    )
+    if use_centerline_raceline:
+        # Directly use the track centerline as the reference.
+        # This removes the extra optimization/smoothing layer and typically
+        # makes the reference line "more obedient" to the track center.
+        raceline_xy = centerline_xy.copy()
+        raceline_px = centerline_px.copy()
+        offsets_m = np.zeros(len(centerline_xy), dtype=float)
+    else:
+        raceline_xy, offsets_m = optimize_racing_line(
+            centerline_xy=centerline_xy,
+            lateral_bounds_m=bounds_m,
+            w_curvature=w_curvature,
+            w_smooth=w_smooth,
+            w_center_bias=w_center_bias,
+        )
 
-    raceline_px = world_to_pixel(raceline_xy, scale_px_per_m, map_center_px_x, map_center_px_y)
+        raceline_px = world_to_pixel(raceline_xy, scale_px_per_m, map_center_px_x, map_center_px_y)
+        raceline_px = constrain_raceline_to_mask(
+            centerline_px=centerline_px,
+            raceline_px=raceline_px,
+            drivable_mask=drivable_mask,
+            min_distance_px=1.0,
+        )
+        raceline_xy = pixel_to_world(raceline_px, scale_px_per_m, map_center_px_x, map_center_px_y)
+        _, normal = _compute_tangent_and_normal(centerline_xy)
+        offsets_m = np.sum((raceline_xy - centerline_xy) * normal, axis=1)
+
     yaw = _compute_yaw(raceline_xy)
     speed_profile = compute_speed_profile(
         path_xy=raceline_xy,

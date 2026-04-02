@@ -20,6 +20,7 @@ class GapFollowAlgo:
         disparity_threshold=1.2,
         smoothing_window_size=10,
         use_disparity_extender=False,
+        angle_offset_rad=0.0,
     ):
         self.max_range = max_range
         self.min_safe_distance = min_safe_distance
@@ -27,6 +28,9 @@ class GapFollowAlgo:
         self.disparity_threshold = disparity_threshold
         self.smoothing_window_size = smoothing_window_size
         self.use_disparity_extender = use_disparity_extender
+        # Adds a constant offset to computed beam angles.
+        # If not provided, defaults to 0 to preserve original behavior.
+        self.angle_offset_rad = float(angle_offset_rad)
 
         self.prev_angle = 0.0
         self.prev_idx = None
@@ -198,7 +202,7 @@ class GapFollowAlgo:
         processed = np.clip(processed, 0.0, self.max_range)
 
         n = len(processed)
-        angles = angle_min + np.arange(n, dtype=float) * angle_increment
+        angles = angle_min + np.arange(n, dtype=float) * angle_increment + self.angle_offset_rad
 
         processed[processed < 0.1] = 0.0
 

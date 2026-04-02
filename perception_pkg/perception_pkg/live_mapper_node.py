@@ -11,7 +11,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Image, Imu, LaserScan
 
 from planning_pkg.race_line_core import gray_image_to_occupancy_data
 
@@ -92,7 +92,7 @@ class LiveMapperNode(Node):
                 ('map_frame_id', 'map'),
                 ('map_publish_rate_hz', 2.0),
                 ('pose_publish_rate_hz', 2.0),
-                ('map_window_size', 1000),
+                ('map_window_size', 1600),
                 ('map_scale_px_per_m', 40.0),
                 ('map_update_rate', 0.05),
                 ('map_update_rate_obstacle', 0.05),
@@ -103,9 +103,9 @@ class LiveMapperNode(Node):
                 ('free_thresh', 200),
                 ('occ_thresh', 90),
                 # Cap ranges used for mapping (m); was 1.0 and discarded almost all gym LiDAR.
-                ('scan_max_range_m', 12.0),
+                ('scan_max_range_m', 2.5),
                 ('scan_trim_count', 80),
-                ('scan_angle_offset_rad', math.pi),
+                ('scan_angle_offset_rad', 0.0),
                 ('track_width_assumption_enabled', True),
                 ('track_width_init_m', 1.0),
                 ('track_width_alpha', 0.97),
@@ -132,6 +132,9 @@ class LiveMapperNode(Node):
                 ('icp_accept_dist_max', 0.35),
                 ('icp_accept_yaw_max', 0.60),
                 ('show_opencv_debug', False),
+                # When sim=False, publish the same debug canvas as sensor_msgs/Image.
+                ('publish_debug_images', True),
+                ('mapper_debug_image_topic', '/mapping/debug_image'),
             ],
         )
 
@@ -160,6 +163,10 @@ class LiveMapperNode(Node):
         self.scan_max_range_m = float(self.get_parameter('scan_max_range_m').value)
         self.scan_trim_count = int(self.get_parameter('scan_trim_count').value)
         self.scan_angle_offset_rad = float(self.get_parameter('scan_angle_offset_rad').value)
+        # Non-sim radar may use a different angle convention; force the original
+        # mapping convention so that forward/back and left/right are consistent.
+        if not self.sim:
+            self.scan_angle_offset_rad = math.pi
         self.track_width_assumption_enabled = bool(self.get_parameter('track_width_assumption_enabled').value)
         self.track_width_est_m = float(self.get_parameter('track_width_init_m').value)
         self.track_width_alpha = float(self.get_parameter('track_width_alpha').value)
@@ -189,6 +196,13 @@ class LiveMapperNode(Node):
         self.icp_accept_yaw_max = float(self.get_parameter('icp_accept_yaw_max').value)
 
         self.show_opencv_debug = bool(self.get_parameter('show_opencv_debug').value) and self.sim
+        self.publish_mapper_debug_images = (
+            (not self.sim) and bool(self.get_parameter('publish_debug_images').value)
+        )
+        self.mapper_debug_image_topic = str(self.get_parameter('mapper_debug_image_topic').value)
+        self.mapper_debug_image_pub = None
+        if self.publish_mapper_debug_images:
+            self.mapper_debug_image_pub = self.create_publisher(Image, self.mapper_debug_image_topic, 1)
 
         self.cx = self.window_size // 2
         self.cy = self.window_size // 2
@@ -232,6 +246,8 @@ class LiveMapperNode(Node):
         if self.show_opencv_debug:
             cv2.namedWindow('Live Mapper Debug', cv2.WINDOW_NORMAL)
             cv2.resizeWindow('Live Mapper Debug', 1000, 1000)
+        if self.show_opencv_debug or self.publish_mapper_debug_images:
+            # In non-sim we only publish; we guard cv2.imshow inside show_debug.
             self.create_timer(0.1, self.show_debug)
 
         self.get_logger().info(
@@ -711,8 +727,21 @@ class LiveMapperNode(Node):
             2,
         )
 
-        cv2.imshow('Live Mapper Debug', canvas)
-        cv2.waitKey(1)
+        if self.show_opencv_debug:
+            cv2.imshow('Live Mapper Debug', canvas)
+            cv2.waitKey(1)
+
+        if self.publish_mapper_debug_images and self.mapper_debug_image_pub is not None:
+            msg = Image()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = ''
+            msg.height = int(canvas.shape[0])
+            msg.width = int(canvas.shape[1])
+            msg.encoding = 'bgr8'
+            msg.is_bigendian = 0
+            msg.step = int(canvas.shape[1] * canvas.shape[2])
+            msg.data = canvas.tobytes()
+            self.mapper_debug_image_pub.publish(msg)
 
 
 def main(args=None) -> None:

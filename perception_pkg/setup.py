@@ -1,9 +1,12 @@
 from setuptools import setup
 
 package_name = 'perception_pkg'
+distribution_name = 'perception-pkg'
 
 setup(
-    name=package_name,
+    # Keep ROS package name as `perception_pkg`, but align Python distribution
+    # name with what console-script wrappers expect (`perception-pkg`).
+    name=distribution_name,
     version='0.0.0',
     packages=[package_name],
     data_files=[

@@ -10,6 +10,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
+from sensor_msgs.msg import Image
 from visualization_msgs.msg import Marker, MarkerArray
 
 from planning_pkg.race_line_core import (
@@ -37,7 +38,15 @@ class RaceLinePlannerNode(Node):
                 ('frame_id_default', 'map'),
                 ('map_stale_timeout_s', 2.0),
                 ('pose_stale_timeout_s', 2.0),
-                ('pose_reindex_enabled', True),
+                # Keep the track's start index fixed (do not roll by current pose),
+                # so the vehicle "returns" to the same start point after completing the loop.
+                ('pose_reindex_enabled', False),
+                # Use the extracted track centerline directly as the reference line.
+                ('use_centerline_as_raceline', True),
+                ('centerline_smooth_passes', 4),
+                # When sim=False, publish debug images to a topic.
+                ('publish_debug_images', True),
+                ('race_line_debug_image_topic', '/race_line/debug_image'),
                 ('free_thresh', 200),
                 ('occ_thresh', 90),
                 ('sample_count', 320),
@@ -48,6 +57,8 @@ class RaceLinePlannerNode(Node):
                 ('a_lat_max', 3.0),
                 ('a_long_accel_max', 2.0),
                 ('a_long_brake_max', 4.0),
+                ('require_closed_track', True),
+                ('closed_track_min_inner_area_px', 800.0),
                 ('use_precomputed_path', False),
                 ('precomputed_path_file', ''),
                 ('auto_save_precomputed_path', False),
@@ -69,6 +80,15 @@ class RaceLinePlannerNode(Node):
         self.map_stale_timeout_s = float(self.get_parameter('map_stale_timeout_s').value)
         self.pose_stale_timeout_s = float(self.get_parameter('pose_stale_timeout_s').value)
         self.pose_reindex_enabled = bool(self.get_parameter('pose_reindex_enabled').value)
+        self.use_centerline_as_raceline = bool(self.get_parameter('use_centerline_as_raceline').value)
+        self.centerline_smooth_passes = int(self.get_parameter('centerline_smooth_passes').value)
+        self.publish_race_line_debug_images = (
+            (not self.sim) and bool(self.get_parameter('publish_debug_images').value)
+        )
+        self.race_line_debug_image_topic = str(self.get_parameter('race_line_debug_image_topic').value)
+        self.race_line_debug_image_pub = None
+        if self.publish_race_line_debug_images:
+            self.race_line_debug_image_pub = self.create_publisher(Image, self.race_line_debug_image_topic, 1)
 
         self.free_thresh = int(self.get_parameter('free_thresh').value)
         self.occ_thresh = int(self.get_parameter('occ_thresh').value)
@@ -82,6 +102,12 @@ class RaceLinePlannerNode(Node):
         self.a_lat_max = float(self.get_parameter('a_lat_max').value)
         self.a_long_accel_max = float(self.get_parameter('a_long_accel_max').value)
         self.a_long_brake_max = float(self.get_parameter('a_long_brake_max').value)
+        self.require_closed_track = bool(self.get_parameter('require_closed_track').value)
+        self.closed_track_min_inner_area_px = float(self.get_parameter('closed_track_min_inner_area_px').value)
+        # Once we have confirmed the loop is closed at least once, start publishing
+        # race line guidance continuously to MPC. This avoids MPC "stalling"
+        # when the closure metric briefly drops due to map noise.
+        self.loop_closed_observed = False
 
         self.path_pub = self.create_publisher(Path, self.path_topic, 1)
         self.marker_pub = self.create_publisher(MarkerArray, self.debug_marker_topic, 1)
@@ -105,6 +131,7 @@ class RaceLinePlannerNode(Node):
         self.last_warn_no_map_s = 0.0
         self.last_warn_stale_map_s = 0.0
         self.last_warn_stale_pose_s = 0.0
+        self.last_warn_open_track_s = 0.0
 
         # Precomputed path data
         self.precomputed_xy: Optional[np.ndarray] = None
@@ -298,6 +325,27 @@ class RaceLinePlannerNode(Node):
             return False
         return (now_s - self.latest_pose_rx_time_s) <= self.pose_stale_timeout_s
 
+    def track_is_closed(self, plan: RaceLinePlan) -> bool:
+        if not self.require_closed_track:
+            return True
+
+        contours, hierarchy = cv2.findContours(plan.drivable_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        if not contours or hierarchy is None:
+            return False
+
+        h = hierarchy[0]
+        outer_idxs = [i for i in range(len(contours)) if h[i, 3] == -1]
+        if not outer_idxs:
+            return False
+
+        outer_idx = max(outer_idxs, key=lambda i: cv2.contourArea(contours[i]))
+        child_idxs = [i for i in range(len(contours)) if h[i, 3] == outer_idx]
+        if not child_idxs:
+            return False
+
+        max_inner_area = max(float(cv2.contourArea(contours[i])) for i in child_idxs)
+        return max_inner_area >= self.closed_track_min_inner_area_px
+
     def replan_callback(self) -> None:
         now_s = self.now_seconds()
 
@@ -343,6 +391,8 @@ class RaceLinePlannerNode(Node):
                 a_long_accel_max=self.a_long_accel_max,
                 a_long_brake_max=self.a_long_brake_max,
                 sample_count=self.sample_count,
+                use_centerline_raceline=self.use_centerline_as_raceline,
+                centerline_smooth_passes=self.centerline_smooth_passes,
             )
         except Exception as exc:
             self.get_logger().error(f'Race line planning failed: {exc}')
@@ -382,6 +432,19 @@ class RaceLinePlannerNode(Node):
                 self.get_logger().warn('Pose is stale; publishing non-reindexed race line.')
                 self.last_warn_stale_pose_s = now_s
 
+        if self.require_closed_track and not self.loop_closed_observed:
+            if not self.track_is_closed(plan):
+                if now_s - self.last_warn_open_track_s > 1.5:
+                    self.get_logger().warn(
+                        'Track is not closed yet; withholding race line publish until loop closure.'
+                    )
+                    self.last_warn_open_track_s = now_s
+                if self.sim or self.publish_race_line_debug_images:
+                    self.draw_debug(plan)
+                return
+            # First time we confirm closure: start publishing to MPC.
+            self.loop_closed_observed = True
+
         self.last_plan = plan
         path_msg = self.publish_path(plan)
         self.last_good_path = path_msg
@@ -394,6 +457,8 @@ class RaceLinePlannerNode(Node):
             self.draw_debug(plan)
         else:
             self.publish_markers(plan)
+            if self.publish_race_line_debug_images:
+                self.draw_debug(plan)
 
         self.iteration += 1
         if self.iteration % 10 == 0:
@@ -563,9 +628,25 @@ class RaceLinePlannerNode(Node):
             f'v_max={float(np.max(plan.speed_profile)):.2f}'
         )
         cv2.putText(canvas, text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (30, 30, 255), 2)
+        if self.sim:
+            cv2.imshow(self.window_name, canvas)
+            cv2.waitKey(1)
+        if self.publish_race_line_debug_images and self.race_line_debug_image_pub is not None:
+            self.publish_debug_image(canvas)
 
-        cv2.imshow(self.window_name, canvas)
-        cv2.waitKey(1)
+    def publish_debug_image(self, canvas_bgr: np.ndarray) -> None:
+        if self.race_line_debug_image_pub is None:
+            return
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = ''
+        msg.height = int(canvas_bgr.shape[0])
+        msg.width = int(canvas_bgr.shape[1])
+        msg.encoding = 'bgr8'
+        msg.is_bigendian = 0
+        msg.step = int(canvas_bgr.shape[1] * canvas_bgr.shape[2])
+        msg.data = canvas_bgr.tobytes()
+        self.race_line_debug_image_pub.publish(msg)
 
 
 def main(args=None) -> None:
