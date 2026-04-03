@@ -51,7 +51,7 @@ class MPCNode(Node):
                 ('scan_topic', '/scan'),
                 ('control_rate_hz', 30.0),
 
-                ('dt', 0.05),
+                ('dt', 0.06),
                 ('horizon', 11),
                 ('wheelbase', 0.50),
 
@@ -94,7 +94,7 @@ class MPCNode(Node):
                 ('effective_goal_front_gain', 0.85),
 
                 # Planner corridor
-                ('path_x_max', 1.3),
+                ('path_x_max', 1.2),
                 ('path_y_limit', 1.1),
                 ('corridor_bin_half_width', 0.18),
                 ('corridor_margin', 0.08),
@@ -128,8 +128,8 @@ class MPCNode(Node):
                 ('terminal_goal_blend_max', 0.10),
 
                 # Speed shaping
-                ('speed_target_angle_gain', 2.00),
-                ('speed_curvature_gain', 3.0),
+                ('speed_target_angle_gain', 1.50),
+                ('speed_curvature_gain', 3.5),
                 ('speed_front_clearance_gain', 3.0),
                 ('speed_width_gain', 4.5),
 
