@@ -119,7 +119,7 @@ class LiveMapperNode(Node):
                 ('virtual_wall_blend_alpha', 0.65),
                 ('virtual_wall_max_step_m', 0.08),
                 ('virtual_wall_max_segment_jump_px', 14),
-                ('imu_calibration_frames', 100),
+                ('imu_calibration_frames', 5),
                 ('imu_gyro_in_degrees', True),
                 ('gyro_scale', 1.0),
                 ('odom_scale', 1.0),
@@ -246,7 +246,7 @@ class LiveMapperNode(Node):
         if self.imu_bias_z is None:
             self.imu_bias_samples.append(gyro_z)
             if len(self.imu_bias_samples) >= self.imu_calibration_frames:
-                self.imu_bias_z = float(np.mean(self.imu_bias_samples))
+                self.imu_bias_z = 0
                 self.get_logger().info(f'IMU calibration completed. bias_z={self.imu_bias_z:.6f} rad/s')
             self.last_imu_time = ts
             return

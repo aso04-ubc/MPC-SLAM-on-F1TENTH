@@ -56,7 +56,7 @@ class MPCNode(Node):
                 ('use_map_pose_for_race_line', False),
                 ('map_pose_stale_timeout_s', 0.75),
                 ('control_rate_hz', 30.0),
-                ('sim', True),
+                ('sim', False),
                 ('use_race_line_planner', False),
                 ('path_stale_timeout_s', 2.0),
                 ('max_path_lateral_error_m', 2.0),
@@ -114,15 +114,16 @@ class MPCNode(Node):
                 ('margin_steer_gain', 0.03),
 
                 # ICP loop closure parameters
-                ('icp_interval', 0.5),
-                ('icp_min_lap_distance', 5.0),
-                ('icp_reset_threshold_radius', 0.5),
-                ('icp_distance_correction_max', 0.0),
-                ('icp_yaw_correction_max', 0.0),
+                ('icp_interval', 0.3),
+                ('icp_min_lap_distance', 3.0),
+                ('icp_reset_threshold_radius', 0.8),
+                ('icp_distance_correction_max', 0.2),
+                ('icp_yaw_correction_max', 0.15),
                 ('icp_max_range', 1.0),
                 ('icp_trim_count', 80),
                 ('hr_max_yaw_correction', 0.5),  # max yaw change (radians, ~90 deg)
-                ('icp_reject_180_flip', True),  # reject yaw corrections with 180 deg ambiguity
+                ('hr_distance_correction_max', 0.2),  # heading reset lateral correction max (m)
+                ('icp_reject_180_flip', False),  # reject yaw corrections with 180 deg ambiguity
 
                 # Corridor extraction improvements
                 ('corridor_dense_points', 50),
@@ -381,6 +382,7 @@ class MPCNode(Node):
         self.icp_max_range = float(self.get_parameter('icp_max_range').value)
         self.icp_trim_count = int(self.get_parameter('icp_trim_count').value)
         self.hr_max_yaw_correction = float(self.get_parameter('hr_max_yaw_correction').value)
+        self.hr_distance_correction_max = float(self.get_parameter('hr_distance_correction_max').value)
         self.icp_reject_180_flip = bool(self.get_parameter('icp_reject_180_flip').value)
         self.max_scan_buffer_size = 300  # max number of point clouds to keep
         self.last_lap_closure_time = 0.0
@@ -528,19 +530,20 @@ class MPCNode(Node):
                         # Project jump onto sideways axis
                         lateral_shift = (dx * side_vector_x) + (dy * side_vector_y)
                         
-                        # Validate yaw correction before applying
-                        yaw_delta = abs(self.wrap_angle(corrected_yaw - self.state.yaw))
-                        
-                        # Check for 180° ambiguity: reject if very close to pi (ambiguous heading)
-                        if self.icp_reject_180_flip and abs(yaw_delta - math.pi) < 0.2:
+                        # Validate corrections before applying
+                        if delta_dist > self.hr_distance_correction_max:
                             self.get_logger().warn(
-                                f"⚠️ Loop Closure REJECTED: Yaw delta {yaw_delta:.3f}rad is ambiguous (near 180°). "
+                                f"⚠️ Loop Closure REJECTED: Distance correction {delta_dist:.3f}m exceeds max "
+                                f"{self.hr_distance_correction_max:.3f}m."
+                            )
+                        elif self.icp_reject_180_flip and abs(delta_yaw - math.pi) < 0.2:
+                            self.get_logger().warn(
+                                f"⚠️ Loop Closure REJECTED: Yaw delta {delta_yaw:.3f}rad is ambiguous (near 180°). "
                                 f"Likely ICP 180° flip. Keep heading: {math.degrees(self.state.yaw):.1f}°"
                             )
-                        # Check if yaw change exceeds reasonable bounds
-                        elif yaw_delta > self.hr_max_yaw_correction:
+                        elif delta_yaw > self.hr_max_yaw_correction:
                             self.get_logger().warn(
-                                f"⚠️ Loop Closure REJECTED: Yaw delta {yaw_delta:.3f}rad exceeds max {self.hr_max_yaw_correction:.3f}rad. "
+                                f"⚠️ Loop Closure REJECTED: Yaw delta {delta_yaw:.3f}rad exceeds max {self.hr_max_yaw_correction:.3f}rad. "
                                 f"Something is very wrong with ICP."
                             )
                         else:
@@ -552,7 +555,7 @@ class MPCNode(Node):
                             self.state.yaw = self.wrap_angle(corrected_yaw)
                             
                             self.get_logger().info(
-                                f"✅ Loop Closed! Lateral shift: {lateral_shift:.3f}m, Yaw: {yaw_delta:.3f}rad"
+                                f"✅ Loop Closed! Lateral shift: {lateral_shift:.3f}m, Yaw: {delta_yaw:.3f}rad"
                             )
                             self.last_lap_closure_time = current_time
                             self.has_loop_closed = True
