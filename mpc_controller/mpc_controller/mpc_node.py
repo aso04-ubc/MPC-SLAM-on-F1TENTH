@@ -113,6 +113,15 @@ class MPCNode(Node):
                 ('margin_speed_gain', 0.015),
                 ('margin_steer_gain', 0.03),
 
+                # ICP loop closure parameters
+                ('icp_interval', 0.5),
+                ('icp_min_lap_distance', 5.0),
+                ('icp_reset_threshold_radius', 0.5),
+                ('icp_distance_correction_max', 0.0),
+                ('icp_yaw_correction_max', 0.0),
+                ('icp_max_range', 1.0),
+                ('icp_trim_count', 80),
+
                 # Corridor extraction improvements
                 ('corridor_dense_points', 50),
                 ('corridor_front_fov_deg', 180.0),
@@ -362,11 +371,14 @@ class MPCNode(Node):
         self.last_odom_x = 0.0
         self.last_odom_y = 0.0
         self.last_icp_time = 0.0
-        self.icp_interval = 0.5  # seconds between ICP attempts
-        self.min_lap_distance = 5.0  # meters - don't reset until we've driven at least this much
-        self.reset_threshold_radius = 0.5  # meters - how close to origin to trigger reset
+        self.icp_interval = float(self.get_parameter('icp_interval').value)
+        self.min_lap_distance = float(self.get_parameter('icp_min_lap_distance').value)
+        self.reset_threshold_radius = float(self.get_parameter('icp_reset_threshold_radius').value)
+        self.distance_correction_max = float(self.get_parameter('icp_distance_correction_max').value)
+        self.yaw_correction_max = float(self.get_parameter('icp_yaw_correction_max').value)
+        self.icp_max_range = float(self.get_parameter('icp_max_range').value)
+        self.icp_trim_count = int(self.get_parameter('icp_trim_count').value)
         self.max_scan_buffer_size = 300  # max number of point clouds to keep
-        self.icp_max_iterations = 50 if True else 15  # higher iterations for lap closure
         self.last_lap_closure_time = 0.0
         self.has_loop_closed = True
 
@@ -483,7 +495,7 @@ class MPCNode(Node):
             if do_heading_reset and self.start_anchor_points is not None:
                 # MATCH AGAINST ORIGINAL ANCHOR (Loop Closure / Heading Reset)
                 ref_points = self.start_anchor_points
-                iters = 50  # Higher iterations for loop closure
+                iters = 50  # Higher iterations for heading reset (matching mapper)
                 
                 if len(ref_points) > 15:
                     current_pose_dict = {'x': self.state.x, 'y': self.state.y, 'yaw': self.state.yaw}
@@ -546,13 +558,28 @@ class MPCNode(Node):
                         )
                         delta_yaw = abs(self.wrap_angle(corrected_yaw - self.state.yaw))
                         
-                        # For standard SLAM, only accept tiny corrections (< 10cm, < 0.1rad)
-                        if delta_dist < 0.10 and delta_yaw < 0.1:
-                            self.state.x = corrected_x
-                            self.state.y = corrected_y
+                        # For standard SLAM, apply same lateral-only correction strategy as heading reset
+                        if delta_dist < self.distance_correction_max and delta_yaw < self.yaw_correction_max:
+                            # Apply ONLY lateral shift + yaw correction (no forward/backward jump)
+                            dx = corrected_x - self.state.x
+                            dy = corrected_y - self.state.y
+                            
+                            # Define sideways axis based on corrected heading
+                            side_vector_x = -math.sin(corrected_yaw)
+                            side_vector_y = math.cos(corrected_yaw)
+                            
+                            # Project jump onto sideways axis
+                            lateral_shift = (dx * side_vector_x) + (dy * side_vector_y)
+                            
+                            # Apply only lateral shift
+                            self.state.x += lateral_shift * side_vector_x
+                            self.state.y += lateral_shift * side_vector_y
+                            
+                            # Apply yaw correction
                             self.state.yaw = self.wrap_angle(corrected_yaw)
+                            
                             self.get_logger().debug(
-                                f"SLAM correction: Dist: {delta_dist:.3f}m, Yaw: {delta_yaw:.3f}rad"
+                                f"SLAM correction: Lateral: {lateral_shift:.3f}m, Yaw: {delta_yaw:.3f}rad"
                             )
                     except Exception as e:
                         self.get_logger().debug(f"ICP failed: {e}")
@@ -633,13 +660,12 @@ class MPCNode(Node):
         angles = msg.angle_min + np.arange(len(ranges)) * msg.angle_increment
         
         # Trim edges (side-looking rays)
-        trim_count = 80
-        if trim_count > 0 and len(ranges) > 2 * trim_count:
-            ranges = ranges[trim_count:-trim_count]
-            angles = angles[trim_count:-trim_count]
+        if self.icp_trim_count > 0 and len(ranges) > 2 * self.icp_trim_count:
+            ranges = ranges[self.icp_trim_count:-self.icp_trim_count]
+            angles = angles[self.icp_trim_count:-self.icp_trim_count]
         
         # Filter valid points
-        valid = (ranges > msg.range_min) & (ranges < 3.5) & np.isfinite(ranges)
+        valid = (ranges > msg.range_min) & (ranges < self.icp_max_range) & np.isfinite(ranges)
         ranges_valid = ranges[valid]
         angles_valid = angles[valid]
         
