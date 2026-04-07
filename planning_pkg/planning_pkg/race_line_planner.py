@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""ROS2 wrapper around race-line core planning.
+
+Responsibilities of this node:
+1) Subscribe to live map and fused pose.
+2) Run periodic map-to-raceline planning.
+3) Reindex closed loop to current pose for stable downstream tracking.
+4) Publish global path and optional visualization/debug outputs.
+"""
+
 import math
 import time
 from typing import Optional
@@ -24,9 +33,12 @@ from planning_pkg.race_line_core import (
 
 
 class RaceLinePlannerNode(Node):
+    """Stateful ROS planner node that repeatedly produces a closed race path."""
+
     def __init__(self) -> None:
         super().__init__('race_line_planner')
 
+        # Runtime parameters for IO topics, map freshness, and planner tuning.
         self.declare_parameters(
             namespace='',
             parameters=[
@@ -77,13 +89,16 @@ class RaceLinePlannerNode(Node):
         self.a_long_accel_max = float(self.get_parameter('a_long_accel_max').value)
         self.a_long_brake_max = float(self.get_parameter('a_long_brake_max').value)
 
+        # Outputs consumed by controller and developer tools.
         self.path_pub = self.create_publisher(Path, self.path_topic, 1)
         self.marker_pub = self.create_publisher(MarkerArray, self.debug_marker_topic, 1)
         self.debug_image_pub = self.create_publisher(Image, '/race_line/debug_image', 1)
 
+        # Inputs from live mapper.
         self.map_sub = self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, 1)
         self.pose_sub = self.create_subscription(PoseStamped, self.pose_topic, self.pose_callback, 10)
 
+        # Latest map snapshot and geometry conversion metadata.
         self.latest_map_gray: Optional[np.ndarray] = None
         self.latest_map_scale_px_per_m = 40.0
         self.latest_map_center_px_x = 500.0
@@ -94,6 +109,7 @@ class RaceLinePlannerNode(Node):
         self.latest_pose: Optional[PoseStamped] = None
         self.latest_pose_rx_time_s = 0.0
 
+        # Last computed plan and last published fallback path.
         self.last_plan: Optional[RaceLinePlan] = None
         self.last_good_path: Optional[Path] = None
         self.iteration = 0
@@ -101,6 +117,7 @@ class RaceLinePlannerNode(Node):
         self.last_warn_stale_map_s = 0.0
         self.last_warn_stale_pose_s = 0.0
 
+        # Gate publishing until one loop is completed for stable "global path".
         self.first_lap_complete = False
         self.start_pose_xy: Optional[tuple] = None
         self.last_pose_xy: Optional[tuple] = None
@@ -113,13 +130,16 @@ class RaceLinePlannerNode(Node):
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.window_name, 1200, 900)
 
+        # Planner execution cadence.
         timer_period = 1.0 / max(0.1, self.replan_rate_hz)
         self.timer = self.create_timer(timer_period, self.replan_callback)
 
     def now_seconds(self) -> float:
+        """Return ROS clock time in seconds."""
         return float(self.get_clock().now().nanoseconds) * 1e-9
 
     def map_callback(self, msg: OccupancyGrid) -> None:
+        """Store latest map and transform metadata from OccupancyGrid."""
         width = int(msg.info.width)
         height = int(msg.info.height)
         if width <= 0 or height <= 0:
@@ -131,6 +151,7 @@ class RaceLinePlannerNode(Node):
             )
             return
 
+        # Convert ROS occupancy layout into planner grayscale convention.
         self.latest_map_gray = occupancy_data_to_gray_image(
             occ_data=np.array(msg.data, dtype=np.int16),
             width=width,
@@ -142,12 +163,14 @@ class RaceLinePlannerNode(Node):
         if resolution > 1e-6:
             self.latest_map_scale_px_per_m = 1.0 / resolution
 
+        # Planner assumes map center as pixel frame origin for conversions.
         self.latest_map_center_px_x = 0.5 * width
         self.latest_map_center_px_y = 0.5 * height
         self.latest_map_frame_id = msg.header.frame_id if msg.header.frame_id else self.frame_id_default
         self.latest_map_rx_time_s = self.now_seconds()
 
     def pose_callback(self, msg: PoseStamped) -> None:
+        """Track latest pose and detect first-lap completion."""
         self.latest_pose = msg
         self.latest_pose_rx_time_s = self.now_seconds()
 
@@ -159,6 +182,7 @@ class RaceLinePlannerNode(Node):
             self.last_pose_xy = (px, py)
             return
 
+        # Integrate traveled distance from consecutive pose updates.
         if self.last_pose_xy is not None:
             dx = px - self.last_pose_xy[0]
             dy = py - self.last_pose_xy[1]
@@ -167,6 +191,7 @@ class RaceLinePlannerNode(Node):
 
         if not self.first_lap_complete:
             dist_to_start = math.hypot(px - self.start_pose_xy[0], py - self.start_pose_xy[1])
+            # Require both minimum distance and return-near-start condition.
             if self.total_distance_traveled >= self.min_lap_distance_m and dist_to_start <= self.loop_closure_radius_m:
                 self.first_lap_complete = True
                 self.get_logger().info(
@@ -175,16 +200,19 @@ class RaceLinePlannerNode(Node):
                 )
 
     def map_is_fresh(self, now_s: float) -> bool:
+        """Check if map has arrived recently enough for planning."""
         if self.latest_map_gray is None:
             return False
         return (now_s - self.latest_map_rx_time_s) <= self.map_stale_timeout_s
 
     def pose_is_fresh(self, now_s: float) -> bool:
+        """Check if pose has arrived recently enough for reindexing."""
         if self.latest_pose is None:
             return False
         return (now_s - self.latest_pose_rx_time_s) <= self.pose_stale_timeout_s
 
     def replan_callback(self) -> None:
+        """Periodic planner loop with stale-data fallback behavior."""
         now_s = self.now_seconds()
 
         if self.latest_map_gray is None:
@@ -203,6 +231,7 @@ class RaceLinePlannerNode(Node):
                 self.path_pub.publish(msg)
             return
 
+        # Compute a fresh plan from the current map snapshot.
         t0 = time.perf_counter()
         try:
             plan = plan_from_map(
@@ -229,6 +258,7 @@ class RaceLinePlannerNode(Node):
                 self.path_pub.publish(msg)
             return
 
+        # Align loop index so first path pose starts near current vehicle position.
         if self.pose_reindex_enabled:
             if self.pose_is_fresh(now_s):
                 pose = self.latest_pose.pose
@@ -261,10 +291,12 @@ class RaceLinePlannerNode(Node):
 
         self.last_plan = plan
 
+        # Only publish global reference after first loop closure.
         if self.first_lap_complete:
             path_msg = self.publish_path(plan)
             self.last_good_path = path_msg
 
+        # Always publish visual diagnostics.
         self.draw_debug(plan)
         if not self.sim:
             self.publish_markers(plan)
@@ -278,10 +310,12 @@ class RaceLinePlannerNode(Node):
             )
 
     def publish_path(self, plan: RaceLinePlan) -> Path:
+        """Publish race line as nav_msgs/Path in map frame."""
         path = Path()
         path.header.stamp = self.get_clock().now().to_msg()
         path.header.frame_id = self.latest_map_frame_id
 
+        # Encode yaw into planar quaternion (z, w only).
         for (x, y), yaw in zip(plan.raceline_xy, plan.yaw):
             pose = PoseStamped()
             pose.header = path.header
@@ -296,6 +330,7 @@ class RaceLinePlannerNode(Node):
         return path
 
     def publish_markers(self, plan: RaceLinePlan) -> None:
+        """Publish centerline + raceline as RViz line-strip markers."""
         stamp = self.get_clock().now().to_msg()
 
         center = Marker()
@@ -357,6 +392,7 @@ class RaceLinePlannerNode(Node):
         self.marker_pub.publish(arr)
 
     def draw_debug(self, plan: RaceLinePlan) -> None:
+        """Render planner overlay on map and publish/show debug image."""
         canvas = cv2.cvtColor(self.latest_map_gray, cv2.COLOR_GRAY2BGR)
 
         cv2.polylines(
@@ -396,6 +432,7 @@ class RaceLinePlannerNode(Node):
             self.debug_image_pub.publish(self._numpy_to_image_msg(canvas))
 
     def _numpy_to_image_msg(self, img: np.ndarray) -> Image:
+        """Convert BGR numpy image to sensor_msgs/Image."""
         msg = Image()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.height, msg.width = img.shape[:2]
@@ -406,6 +443,7 @@ class RaceLinePlannerNode(Node):
 
 
 def main(args=None) -> None:
+    """ROS entrypoint."""
     rclpy.init(args=args)
     node = RaceLinePlannerNode()
 

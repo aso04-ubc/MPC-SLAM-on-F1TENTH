@@ -1,3 +1,16 @@
+"""Core map-to-raceline planning utilities.
+
+This module is intentionally ROS-agnostic. It accepts a 2D occupancy-style map
+and produces a closed-loop race line with a speed profile. The high-level
+pipeline is:
+
+1) Convert/threshold map data into a clean drivable mask.
+2) Extract a closed centerline from track boundaries.
+3) Estimate per-point lateral bounds from free-space distance.
+4) Optimize lateral offsets to smooth curvature while staying inside bounds.
+5) Compute heading and a kinematically-feasible speed profile.
+"""
+
 import math
 from dataclasses import dataclass
 from typing import Tuple
@@ -10,18 +23,30 @@ from scipy.spatial import cKDTree
 
 @dataclass
 class RaceLinePlan:
+    """Container for all planning outputs used by downstream nodes."""
+
+    # Centerline in world coordinates (x forward, y left).
     centerline_xy: np.ndarray
+    # Optimized race line in world coordinates.
     raceline_xy: np.ndarray
+    # Centerline in planner pixel coordinates.
     centerline_px: np.ndarray
+    # Race line in planner pixel coordinates.
     raceline_px: np.ndarray
+    # Path tangent heading at each race-line point (rad).
     yaw: np.ndarray
+    # Reference speed at each race-line point (m/s).
     speed_profile: np.ndarray
+    # Per-point signed-offset limits around centerline (m).
     lateral_bounds_m: np.ndarray
+    # Solved centerline offsets used to generate raceline (m).
     lateral_offsets_m: np.ndarray
+    # Binary drivable mask used for contour extraction.
     drivable_mask: np.ndarray
 
 
 def wrap_angle(angle: float) -> float:
+    """Normalize any angle to [-pi, pi]."""
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
@@ -31,11 +56,20 @@ def occupancy_data_to_gray_image(
     height: int,
     occupied_threshold: int = 50,
 ) -> np.ndarray:
-    """
-    Convert OccupancyGrid flattened data (row-major, origin at bottom-left)
-    to a top-down grayscale image consistent with mapper/planner pixel convention.
+    """Convert ROS OccupancyGrid data into planner grayscale convention.
+
+    Input occupancy values:
+    - occupied >= occupied_threshold
+    - free == 0
+    - unknown (typically -1) or intermediate values
+
+    Output grayscale convention used in this project:
+    - 0   -> occupied
+    - 127 -> unknown
+    - 255 -> free
     """
     grid = np.asarray(occ_data, dtype=np.int16).reshape(height, width)
+    # ROS stores row-major from bottom-left; planner images are top-down.
     top_down = np.flipud(grid)
 
     gray = np.full((height, width), 127, dtype=np.uint8)
@@ -49,10 +83,7 @@ def gray_image_to_occupancy_data(
     free_thresh: int = 200,
     occ_thresh: int = 90,
 ) -> np.ndarray:
-    """
-    Convert top-down grayscale map (0 obstacle / 127 unknown / 255 free)
-    into OccupancyGrid flattened int8 data.
-    """
+    """Convert planner grayscale map back to ROS OccupancyGrid values."""
     if gray.ndim != 2:
         raise ValueError('Expected grayscale image')
 
@@ -79,14 +110,18 @@ def gray_image_to_occupancy_data(
 
 
 def pixel_to_world(points_px: np.ndarray, scale_px_per_m: float, cx: float, cy: float) -> np.ndarray:
+    """Convert planner pixel coordinates to world (x, y) in meters."""
     pts = np.asarray(points_px, dtype=float)
     world = np.empty_like(pts, dtype=float)
+    # Pixel y grows downward; world x grows upward in image.
     world[:, 0] = (cy - pts[:, 1]) / scale_px_per_m
+    # Pixel x grows right; world y grows right (left-positive car frame style).
     world[:, 1] = (pts[:, 0] - cx) / scale_px_per_m
     return world
 
 
 def world_to_pixel(points_xy: np.ndarray, scale_px_per_m: float, cx: float, cy: float) -> np.ndarray:
+    """Convert world (x, y) in meters into planner pixel coordinates."""
     pts = np.asarray(points_xy, dtype=float)
     px = np.empty_like(pts, dtype=float)
     px[:, 0] = cx + pts[:, 1] * scale_px_per_m
@@ -95,6 +130,7 @@ def world_to_pixel(points_xy: np.ndarray, scale_px_per_m: float, cx: float, cy: 
 
 
 def _resample_closed_curve(points: np.ndarray, num_samples: int) -> np.ndarray:
+    """Resample a closed polyline to uniform arc-length samples."""
     pts = np.asarray(points, dtype=float)
     if len(pts) < 4:
         raise ValueError('Not enough points to resample closed curve')
@@ -115,6 +151,7 @@ def _resample_closed_curve(points: np.ndarray, num_samples: int) -> np.ndarray:
 
 
 def _smooth_closed(points: np.ndarray, passes: int = 2) -> np.ndarray:
+    """Apply circular three-point smoothing on a closed curve."""
     out = points.copy()
     for _ in range(max(0, passes)):
         out = 0.25 * np.roll(out, 1, axis=0) + 0.5 * out + 0.25 * np.roll(out, -1, axis=0)
@@ -127,21 +164,26 @@ def preprocess_drivable_mask(
     occ_thresh: int = 90,
     kernel_size: int = 5,
 ) -> np.ndarray:
+    """Create a clean drivable-region mask from grayscale occupancy map."""
     if gray.ndim != 2:
         raise ValueError('Expected grayscale image')
 
+    # Start from high-confidence free/occupied thresholding.
     mask = (gray >= free_thresh).astype(np.uint8) * 255
     obstacle = (gray <= occ_thresh).astype(np.uint8) * 255
 
     if np.any(obstacle > 0):
+        # Slightly dilate obstacles to avoid planning directly on boundaries.
         k_obs = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         obstacle = cv2.dilate(obstacle, k_obs, iterations=1)
         mask[obstacle > 0] = 0
 
+    # Close small gaps and remove speckle noise.
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
 
+    # Keep only the largest connected drivable component.
     n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if n_labels <= 1:
         raise ValueError('No drivable region found in map')
@@ -153,6 +195,12 @@ def preprocess_drivable_mask(
 
 
 def extract_centerline_from_mask(drivable_mask: np.ndarray, num_samples: int) -> np.ndarray:
+    """Extract a closed centerline from drivable mask contours.
+
+    Expected map topology is track-like: one large outer contour and
+    (ideally) one inner hole contour. The centerline is approximated by
+    pairing each outer sample with its nearest inner sample.
+    """
     contours, hierarchy = cv2.findContours(drivable_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
     if not contours or hierarchy is None:
         raise ValueError('Could not extract contours from drivable mask')
@@ -165,6 +213,7 @@ def extract_centerline_from_mask(drivable_mask: np.ndarray, num_samples: int) ->
     outer_idx = max(outer_idxs, key=lambda i: cv2.contourArea(contours[i]))
     outer = contours[outer_idx].reshape(-1, 2).astype(float)
 
+    # Child contours of the selected outer boundary are candidate inner walls.
     child_idxs = [i for i in range(len(contours)) if h[i, 3] == outer_idx]
 
     outer_rs = _resample_closed_curve(outer, num_samples)
@@ -184,6 +233,7 @@ def extract_centerline_from_mask(drivable_mask: np.ndarray, num_samples: int) ->
 
 
 def _compute_tangent_and_normal(path_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute unit tangents and left-pointing unit normals on closed path."""
     d = np.roll(path_xy, -1, axis=0) - np.roll(path_xy, 1, axis=0)
     norm = np.linalg.norm(d, axis=1, keepdims=True)
     norm = np.maximum(norm, 1e-6)
@@ -198,6 +248,8 @@ def _estimate_lateral_bounds(
     scale_px_per_m: float,
     margin_m: float = 0.05,
 ) -> np.ndarray:
+    """Estimate allowable lateral offset around centerline for each sample."""
+    # Distance transform gives pixel distance to nearest non-drivable cell.
     dt_px = cv2.distanceTransform(drivable_mask, cv2.DIST_L2, 5)
     h, w = dt_px.shape
 
@@ -216,6 +268,14 @@ def optimize_racing_line(
     w_smooth: float,
     w_center_bias: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """Solve bounded lateral-offset smoothing problem for race line.
+
+    Optimization variable is scalar lateral offset e[i] along centerline normal.
+    The objective balances:
+    - curvature-like second difference penalty
+    - first-difference smoothness
+    - small centerline bias toward e=0
+    """
     n = len(centerline_xy)
     _, normal = _compute_tangent_and_normal(centerline_xy)
 
@@ -229,6 +289,7 @@ def optimize_racing_line(
         )
 
     x0 = np.zeros(n, dtype=float)
+    # Bound each offset using local free-space estimate.
     bounds = [(-float(b), float(b)) for b in lateral_bounds_m]
 
     res = minimize(objective, x0=x0, method='L-BFGS-B', bounds=bounds, options={'maxiter': 220})
@@ -240,11 +301,13 @@ def optimize_racing_line(
 
 
 def _compute_yaw(path_xy: np.ndarray) -> np.ndarray:
+    """Compute heading from forward differences on closed path."""
     d = np.roll(path_xy, -1, axis=0) - path_xy
     return np.arctan2(d[:, 1], d[:, 0])
 
 
 def _compute_curvature(path_xy: np.ndarray) -> np.ndarray:
+    """Approximate signed curvature kappa = d(heading)/ds on closed path."""
     yaw = _compute_yaw(path_xy)
     yaw_next = np.roll(yaw, -1)
     dyaw = np.arctan2(np.sin(yaw_next - yaw), np.cos(yaw_next - yaw))
@@ -260,21 +323,33 @@ def compute_speed_profile(
     a_long_accel_max: float,
     a_long_brake_max: float,
 ) -> np.ndarray:
+    """Compute speed profile with lateral and longitudinal accel limits.
+
+    Steps:
+    1) Apply lateral acceleration bound from curvature.
+    2) Forward pass to enforce acceleration limits.
+    3) Backward pass to enforce braking limits.
+    """
     n = len(path_xy)
     curvature = np.abs(_compute_curvature(path_xy))
+    # v <= sqrt(a_lat / |kappa|); clamp very small curvature for stability.
     v_lat = np.sqrt(np.maximum(a_lat_max, 1e-3) / np.maximum(curvature, 1e-3))
     v = np.minimum(v_lat, v_max)
 
     ds = np.linalg.norm(np.roll(path_xy, -1, axis=0) - path_xy, axis=1)
     ds = np.maximum(ds, 1e-3)
 
+    # Rotate path so the tightest speed point is index 0; this helps closed-loop
+    # consistency when applying one-way forward/backward passes.
     start = int(np.argmin(v))
     v_roll = np.roll(v, -start)
     ds_roll = np.roll(ds, -start)
 
+    # Forward pass: acceleration-limited propagation.
     for i in range(1, n):
         v_roll[i] = min(v_roll[i], math.sqrt(max(0.0, v_roll[i - 1] ** 2 + 2.0 * a_long_accel_max * ds_roll[i - 1])))
 
+    # Backward pass: braking-limited propagation.
     for i in range(n - 2, -1, -1):
         v_roll[i] = min(v_roll[i], math.sqrt(max(0.0, v_roll[i + 1] ** 2 + 2.0 * a_long_brake_max * ds_roll[i])))
 
@@ -290,6 +365,11 @@ def reindex_closed_raceline_by_pose(
     pose_yaw: float,
     enforce_heading_alignment: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Rotate closed-loop indexing so first point is closest to current pose.
+
+    Optionally flips path direction if local heading opposes current vehicle
+    heading by > 90 degrees.
+    """
     if len(raceline_xy) == 0:
         return raceline_xy, yaw, speed_profile
 
@@ -303,6 +383,7 @@ def reindex_closed_raceline_by_pose(
     if enforce_heading_alignment:
         heading_err = abs(wrap_angle(float(heading[idx]) - pose_yaw))
         if heading_err > (0.5 * math.pi):
+            # Reverse the loop if the nearest point faces opposite travel direction.
             pts = pts[::-1].copy()
             speed = speed[::-1].copy()
             heading = _compute_yaw(pts)
@@ -331,6 +412,7 @@ def plan_from_map(
     a_long_brake_max: float,
     sample_count: int = 320,
 ) -> RaceLinePlan:
+    """Full map-to-raceline planning pipeline entrypoint."""
     drivable_mask = preprocess_drivable_mask(
         gray,
         free_thresh=free_thresh,
