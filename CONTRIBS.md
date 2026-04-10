@@ -6,7 +6,10 @@
 
 ---
 ##  Amir Tajaddoditalab
-**Primary Focus:** PID Controller and tuning
+**Primary Focus:** MPC Controller implementation and tuning
+* **Code implementation**
+* Devloped the MPC controller frame work along with the cost function as well as reactive path planning
+* Validates MPC Controller with sim and further tuned parameters on track on the real physical car
 
 ### Key Contributions
 * **Code implementations**
