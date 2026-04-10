@@ -26,7 +26,7 @@
 * Implemented ICP to correct IMU errors with minimal introduction of noise
 * Map building, live SLAM through vehicle position and yaw estimates, calculating occupancy grid
 * Interfacing path planning and controller
-**Testing:**
+* **Testing:**
 * SLAM debugging in simulation and on hardware
 * Verification of ICP correctness, debugging
 
