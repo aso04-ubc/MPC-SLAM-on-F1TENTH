@@ -29,17 +29,14 @@
 * Tested a variety of starting setups to verify the response (overdamped, underdamped, critically damped)
 
 ---
-##  Fengwei Huang
-**Primary Focus:** PID controller implementation
+## Fengwei Huang
+
+**Primary Focus:** MPC-related development, documentation, and testing support
 
 ### Key Contributions
-* **Code implementations**
-  * Implemented the PID controller used by the wall following algorithm
-  * Defined the wall-following control error based on lateral distance and heading angle
-  * Structured the controller as a standalone module for integration with the wall-follow node
-* **Stability**
-  * Added basic safeguards to improve control stability and prevent unsafe steering behavior
-
+- **MPC-related development:** Contributed to an alternative trajectory-tracking MPC branch, including work on vehicle modeling, discretization, local linearization, and reference handling.
+- **Documentation:** Helped write and revise the README, including implementation details, testing notes, and system-level descriptions.
+- **Testing support:** Assisted with routine testing, validation, parameter checking, and debugging under different configurations.
 
 ---
 ## Guanxu Zhou
