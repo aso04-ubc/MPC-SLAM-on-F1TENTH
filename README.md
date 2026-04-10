@@ -282,7 +282,13 @@ v_i^{\text{lat}} = \sqrt{\frac{a_{\text{lat,max}}}{\max(|\kappa_i|,\epsilon)}}, 
 v_i \le v_{\max},
 $$
 
-followed by forward/backward passes to enforce longitudinal acceleration and braking feasibility along arc length.
+followed by forward/backward passes to enforce longitudinal acceleration and braking feasibility along arc length:
+
+$$
+v_{i+1} \le \sqrt{v_i^2 + 2a_{\mathrm{acc}}\Delta s_i},
+\qquad
+v_i \le \sqrt{v_{i+1}^2 + 2a_{\mathrm{brake}}\Delta s_i}.
+$$
 
 ![Global planner demo](pic/global%20planner.gif)
 
