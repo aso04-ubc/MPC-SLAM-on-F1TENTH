@@ -254,6 +254,38 @@ The full global planning stack is maintained on the `sim_working_version` branch
 2. **Race-line optimization** solves for lateral offsets that reduce curvature and smoothness cost while respecting free-space bounds.
 3. **Speed profiling** computes a curvature-limited speed profile with feasibility passes.
 
+### Path-Planning Algorithm
+
+Let $\mathbf{c}_i \in \mathbb{R}^2$ be sampled centerline points and $\mathbf{n}_i$ their unit normals. The race line is parameterized as:
+
+$$
+\mathbf{r}_i = \mathbf{c}_i + e_i \mathbf{n}_i,
+$$
+
+where $e_i$ is the lateral offset at sample $i$. Offsets are solved by bounded optimization:
+
+$$
+\min_{\mathbf{e}} \; J(\mathbf{e}) =
+w_{\kappa}\sum_i (\Delta^2 e_i)^2 +
+w_s\sum_i (\Delta e_i)^2 +
+w_c\sum_i e_i^2,
+\quad
+\text{s.t. } -b_i \le e_i \le b_i,
+$$
+
+with $b_i$ estimated from local free-space distance (distance transform on the drivable mask). The first term penalizes curvature-like variation, the second enforces smooth offset transitions, and the third keeps the solution near the centerline when not required to deviate.
+
+We solve this problem with **L-BFGS-B** (`scipy.optimize.minimize`) because the objective is smooth and differentiable, while each offset has simple box constraints ($-b_i \le e_i \le b_i$). This method is computationally efficient for medium-sized waypoint vectors, handles per-variable bounds directly, and is robust for repeated replanning without requiring manual constraint projection.
+
+After geometry optimization, speed is limited by curvature and vehicle acceleration bounds:
+
+$$
+v_i^{\text{lat}} = \sqrt{\frac{a_{\text{lat,max}}}{\max(|\kappa_i|,\epsilon)}}, \qquad
+v_i \le v_{\max},
+$$
+
+followed by forward/backward passes to enforce longitudinal acceleration and braking feasibility along arc length.
+
 ![Global planner demo](pic/global%20planner.gif)
 
 ### Hardware Status
