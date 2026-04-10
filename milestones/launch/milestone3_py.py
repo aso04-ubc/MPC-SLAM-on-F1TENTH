@@ -29,23 +29,4 @@ def generate_launch_description():
             parameters=[],
         ),
 
-        # Node(
-        #     package='high_level_planner',
-        #     executable='high_level_planner_node',
-        #     name='high_level_planner_node_launch',
-        #     output='screen',
-        #     parameters=[{'sim': sim}],
-        # ),
-        # Node(
-        #     package='lap_counter',
-        #     executable='lap_counter_node',
-        #     name='lap_counter_node_launch',
-        #     output='screen',
-        #     parameters=[
-        #         {'target_laps': 3},
-        #         {'image_topic': '/camera/color/image_raw'},
-        #         {'lap_count_topic': '/lap_count'},
-        #         {'lap_time_topic': '/lap_time'},
-        #     ],
-        # )
     ])
