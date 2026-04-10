@@ -59,12 +59,12 @@
 
 ---
 ##  Leo Liu
-**Primary Focus:** data processing, documentation
+**Primary Focus:** high-level planning research, system integration documentation
 
 ### Key Contributions
-* **Data Processing:** Discussed data processing algorithms and integration with PID control for implementation.
-* **Documentation:** Wrote README.md explaining detailed technical aspects such as data processing, Kalman filtering, safety, drive control, etc.
-* **Testing:** Stress tested the car under multiple scenarios for final verification.
+* **High-level planning research:** Contributed to high-level planning research, including track-level planning structure and decomposition of planning responsibilities across mapping, planning, and control modules.
+* **Interface design:** Defined how planner outputs should be interfaced with the controller and simulation workflow, including expected path representation, frame consistency, and topic-level integration assumptions.
+* **Documentation:** Expanded technical documentation to clarify planning/control data flow, system architecture decisions, and integration rationale for team implementation.
 
 ---
 ## Yiran Wang
