@@ -43,19 +43,14 @@
 
 ---
 ## Guanxu Zhou
-**Primary Focus:** wall follow node data process implementation
+**Primary Focus:** semantic perception pipeline, mapping deployment, and planner optimization
 
 ### Key Contributions
-* **Code Implementation:**
-  * Implemented the data process part of wall following node
-  * Integrated PID control with data process
-* **Debug**
-  * Test out different parameter for pid
-  * Performed Long-Duration Stress Test
-* **Project Management**
-  * Doing code review on pull requests
-  * Defined project scope and delegated tasks.
-  * Set up the project scaffolding
+* **YOLO annotation, training, and testing:** Contributed to dataset annotation, model training, and testing workflows for the YOLO model.
+* **Semantic perception research:** Explored sensor-fusion and localization-improvement directions relevant to the semantic-perception pipeline.
+* **Mapping deployment:** Worked on transforming the mapping model into an on-car working version.
+* **Parameter tuning:** Participated in system-level tuning to improve runtime performance and reliability.
+* **High-level planner updates:** Contributed to modifications and refinement of the high-level planner.
 
 ---
 ##  Leo Liu
