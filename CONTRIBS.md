@@ -67,13 +67,11 @@
 * **Testing:** Stress tested the car under multiple scenarios for final verification.
 
 ---
-
-##  Yiran Wang
-**Primary Focus:** safety node architecture, custom interfaces, integration & performance
+## Yiran Wang
+**Primary Focus:** safety node architecture, performance tuning & diagnostics
 
 ### Key Contributions
-* **Safety node architecture:** Implemented a multithreaded, native high‑performance, low‑latency safety node for real‑time decisioning.
-* **Custom interfaces & topics:** Defined custom message types and topics, integrated message prioritization and forwarding into the safety node.
-* **System integration:** Wired the safety node into other components and validated end‑to‑end data flow.
-* **Build/test & tuning:** Managed multi‑package workflows, supported testing and builds, and tuned parameters for safety and stable performance.
-
+* **Safety node architecture:** Implemented a high-performance, low-latency safety node for real-time message prioritization and forwarding.
+* **Custom interfaces & topics:** Defined custom message types and topics to facilitate seamless system integration.
+* **Parameter tuning & debugging:** Performed extensive fine-tuning of control parameters and assisted in overall system debugging.
+* **System diagnostics:** Analyzed sensor recordings and feedback to identify and analyze technical problems.
