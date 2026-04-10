@@ -1,6 +1,6 @@
 # Contribution Report
 
-**Project:** Milestone 1 - Wall Following
+**Project:** MPC & SLAM
 
 **Team Members:** Amir Tajaddoditalab, Augustin So, Fengwei Huang, Guanxu Zhou, Leo Liu, Yiran Wang
 
@@ -19,17 +19,15 @@
 
 ---
 ##  Augustin So
-**Primary Focus:** distance and angle calculation relative to walls, LiDAR interface functions
+**Primary Focus:** SLAM error correction, LiDAR interface functions
 
 ### Key Contributions
 * **Code Implementation:**
-* Implemented error calculation from relative angle and distance
-* Attempted different wall following strategies to compare effectiveness
-* Tested a variety of parameters for k_p, k_d, k_i
-* Implemented proper usage of proportional, integral, derivative terms
+* Implemented ICP to correct IMU errors with minimal introduction of noise
+* Map building, live SLAM
 * **Testing:**
-* Performed testing on calculations using self.get_logger to verify angle and distance correctness during simulation
-* Tested a variety of starting setups to verify the response (overdamped, underdamped, critically damped)
+* SLAM debugging in simulation and on hardware
+* Verification of ICP correctness, debugging
 
 ---
 ## Fengwei Huang
