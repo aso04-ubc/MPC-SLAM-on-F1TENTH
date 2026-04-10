@@ -1,101 +1,316 @@
-# Project B7
+# Real-Time MPC-Based Autonomous Racing with Obstacle Avoidance for F1TENTH
 
-## Project Overview
+## Overview
 
-This repository contains the final Project B7 ROS 2 workspace for our F1TENTH autonomous racing system. The active runtime stack combines a local reactive MPC controller with a safety / AEB node and custom prioritized control messages.
+This repository contains our final `Project_B7` ROS 2 stack for autonomous F1TENTH racing. The active runtime path on `main` is a **LiDAR-driven reactive local MPC controller** feeding a **C++ safety / AEB node** through custom prioritized control messages.
 
-The main project goal is to drive from LiDAR-only local perception without requiring a pre-built global map. The final system extracts a local drivable corridor from the forward LiDAR scan, shapes a short-horizon reference inside that corridor, solves a local MPC problem, and then passes the command through a safety layer before publishing the final `/drive` command.
+The primary design goal is to drive from **local perception only**, without requiring a pre-built global map during the default runtime path. The controller extracts a local drivable corridor from forward LiDAR data, shapes a short-horizon reference, solves a constrained quadratic program (QP) with OSQP, and passes commands through the safety layer before publishing the final `/drive` command.
 
-Optional and experimental code is also retained in this repository for comparison and project continuity, especially the `yolo/` folder used for offline perception experiments.
+In addition to the active local controller, the repository also includes:
 
-Note: the active launch file keeps the legacy name `milestone3_py.py` for repository continuity, but it is the final project launch entry currently used for the local MPC stack.
+- A **global planning** stack that runs successfully in simulation on the `sim_working_version` branch.
+- A **C++ safety node** with time-to-collision (TTC) and distance-based automatic emergency braking (AEB).
+- An **experimental YOLO-based semantic perception** pipeline kept as standalone scripts and not integrated into the ROS runtime stack.
 
-## Final Scope
+![MPC without planner](pic/mpc%20without%20planner.gif)
 
-The active project pipeline is:
+---
 
-- `mpc_controller`: local reactive MPC for nominal driving
-- `safety`: command arbitration and LiDAR-based automatic emergency braking
-- `dev_b7_interfaces`: custom control message definitions used between nodes
-- `milestones/launch/milestone3_py.py`: current launch entry point for the project stack
+## Getting Started
 
-The final system does not rely on a separate persistent global planner in the current runtime path. Instead, it performs local corridor extraction and local reference generation directly inside the MPC node.
+### Prerequisites
 
-In addition to the active local MPC runtime path, the broader final project also included a simulation-level global planning demonstration discussed in the final report. That global layer is not part of the default runtime launch documented in this README, and on-car global planning integration remained partial.
+- **ROS 2 Foxy** on Ubuntu 20.04
+- Python 3.8+
+- F1TENTH simulator or physical vehicle setup
+
+### Build
+
+```bash
+source /opt/ros/foxy/setup.sh
+cd ~/sim_ws
+pip install -r src/Project_B7/requirements.txt
+colcon build --packages-select dev_b7_interfaces safety mpc_controller milestones
+source install/setup.bash
+```
+
+If you prefer to build the full workspace instead of selected packages:
+
+```bash
+colcon build
+source install/setup.bash
+```
+
+### Launch - Local Reactive MPC + Safety (`main`)
+
+```bash
+ros2 launch milestones mpc_start_up.py
+```
+
+This launch file starts:
+
+- `safety_node` for arbitration and emergency braking
+- `mpc_controller_node` for local corridor generation and MPC control
+
+The launch file currently defaults to real-car mode. To switch to simulation, edit `milestones/launch/mpc_start_up.py` and set:
+
+```python
+sim = True
+```
+
+### Launch - Global Planner in Simulation (`sim_working_version`)
+
+The global planning stack that successfully runs in simulation lives on the `sim_working_version` branch:
+
+```bash
+cd ~/sim_ws/src/Project_B7
+git checkout sim_working_version
+
+cd ~/sim_ws
+colcon build --packages-select dev_b7_interfaces safety mpc_controller milestones
+source install/setup.bash
+
+ros2 launch milestones race_line_stack.launch.py sim:=true odom_topic:=/ego_racecar/odom map_window_size:=1000
+```
+
+For best performance, replace the default Levine map with `./levine.png` in that branch's launch configuration. The planner is computationally expensive; with a 1000 px map, a practical reference point is roughly **16 CPU cores** and **10 GB of memory**.
+
+### Core ROS Topics
+
+| Topic | Type | Direction | Description |
+|---|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | Input | LiDAR scan data |
+| `/odom` | `nav_msgs/Odometry` | Input | Vehicle odometry for local MPC |
+| `/drive_control` | `dev_b7_interfaces/DriveControlMessage` | Internal | Prioritized controller output sent to safety |
+| `/drive` | `ackermann_msgs/AckermannDriveStamped` | Output | Final command after safety arbitration |
+
+---
 
 ## System Architecture
 
+The deployed system combines an active local runtime stack, a simulation-only global planner branch, and a standalone perception experiment.
+
 ### Active Runtime Stack
 
-```text
-/scan --------------------------+
-                                |
-                                v
-                     +----------------------+
-                     |    mpc_controller    |
-                     | local corridor + MPC |
-                     +----------------------+
-                                |
-                                | /drive_control
-                                v
-/scan --------------------------+------------------+
-/odom or /ego_racecar/odom -----+                  |
-                                                   v
-                                      +----------------------+
-                                      |        safety        |
-                                      | arbitration + AEB    |
-                                      +----------------------+
-                                                   |
-                                                   | /drive
-                                                   v
-                                                vehicle
-```
+Without global planner we have:
+![w/o control flow](pic/control%20flow%20fallback.png)
 
-### Node Roles
+With global planner we have:
+![w control flow](pic/control%20flow.png)
 
-- `mpc_controller` subscribes to LiDAR and odometry, generates a local safe corridor, solves the short-horizon MPC problem, and publishes a prioritized `DriveControlMessage` on `/drive_control`.
-- `safety` listens to `/drive_control`, keeps the highest-priority active command, evaluates obstacle risk using LiDAR and odometry, and publishes the final `AckermannDriveStamped` command on `/drive`.
-- `dev_b7_interfaces` defines the prioritized command message used for controller-to-safety communication.
+### Runtime Roles
 
-### Figure Placeholders
+- `mpc_controller` subscribes to LiDAR and odometry, builds a safe local corridor, solves the short-horizon MPC problem, and publishes a prioritized `DriveControlMessage`.
+- `safety` listens to `/drive_control`, evaluates TTC and obstacle distance, forwards the highest-priority safe command, and publishes the final `/drive`.
+- `dev_b7_interfaces` defines the prioritized command interface used between controller and safety node.
 
-Placeholder: insert an updated system architecture figure here.
+### High-Level Project Layers
 
-Placeholder: insert a ROS node / topic diagram here.
+| Layer | Description | Status |
+|---|---|---|
+| **Reactive Local MPC** | LiDAR corridor extraction + gap-guided reference + constrained QP control at 30 Hz. | Fully deployed on car |
+| **Global Planning** | Occupancy-grid processing, race-line optimization, and speed profiling. | Demonstrated in simulation |
+| **YOLO Perception** | Semantic camera/LiDAR experiments for wall-vs-obstacle classification. | Standalone only |
+
+![MPC with planner](pic/mpc%20with%20planner.gif)
+
+---
 
 ## Repository Structure
 
 ```text
-.
+Project_B7/
 |-- README.md
 |-- CONTRIBS.md
-|-- dev_b7_interfaces/   # Custom ROS 2 message definitions for prioritized control
-|-- milestones/          # Launch package; current entry point is launch/milestone3_py.py
-|-- mpc_controller/      # Local reactive MPC controller
-|-- pic/                 # Images and diagrams used by documentation
-|-- safety/              # C++ safety node with command arbitration and AEB
-|-- yolo/                # Optional / experimental offline perception utilities
+|-- requirements.txt
+|-- dev_b7_interfaces/         # Custom ROS 2 message definitions
+|-- milestones/
+|   |-- launch/
+|   |   |-- mpc_start_up.py    # Main local MPC + safety launch file
+|-- mpc_controller/
+|   |-- mpc_controller/
+|   |   |-- mpc_node.py        # Main MPC node
+|   |   |-- gap_utils.py       # Gap-follow target selection
+|-- safety/                    # C++ safety / AEB package
+|-- yolo/                      # Standalone perception experiments
+|-- pic/                       # Demo GIFs and figures
 ```
 
-### Main Runtime Path
+### Branches
 
-The active runtime chain for the project is:
+| Branch | Purpose |
+|---|---|
+| `main` | Primary branch with local reactive MPC + safety |
+| `sim_working_version` | Simulation-capable global planning stack |
+| `yolo` | YOLO development branch |
+| `leo/planner` | Planner research branch |
+| `offline-slam` | Offline SLAM and mapping experiments |
 
-1. `mpc_controller`
-2. `safety`
-3. `/drive` output to simulator or car
+---
 
-### Reference / Experimental Code
+## Reactive Local MPC Controller
 
-- `yolo/` contains offline scripts for semantic segmentation experiments, dataset preparation, and LiDAR-camera semantic association.
-- The broader final project also included a simulation-level global planning demonstration described in the report; that layer is not part of the default launch path documented here.
-- `pic/` currently contains older diagrams and can be updated with project-specific figures before submission.
+The core implementation lives in `mpc_controller/mpc_controller/mpc_node.py`.
+
+### Kinematic Bicycle Model
+
+The MPC uses a linearized kinematic bicycle model with state $z = [x, y, \psi, v]$ and control $u = [a, \delta]$:
+
+$$
+\begin{aligned}
+\dot{x} &= v\cos(\psi) \\
+\dot{y} &= v\sin(\psi) \\
+\dot{\psi} &= \frac{v}{L}\tan(\delta) \\
+\dot{v} &= a
+\end{aligned}
+$$
+
+where $L = 0.50\ \mathrm{m}$ is the wheelbase. Around a nominal reference, the system is linearized and discretized into:
+
+$$
+z_{k+1} \approx A_k z_k + B_k u_k + g_k
+$$
+
+### Optimization Objective
+
+The QP penalizes state-tracking error, control effort, input-rate variation, and soft corridor-boundary violations:
+
+$$
+\min \sum_k \|z_k - z_k^{\mathrm{ref}}\|_Q^2 + \sum_k \|u_k - u_k^{\mathrm{ref}}\|_R^2 + \sum_k \|u_k - u_{k-1}\|_{R_d}^2 + w_s \sum_k s_k^2
+$$
+
+subject to steering, acceleration, speed, heading, and corridor constraints.
+
+### Key Design Choices
+
+- **Linearized MPC** keeps OSQP solve times low enough for stable real-time control.
+- **LiDAR-first local control** avoids dependence on global localization during the main runtime path.
+- **Blended reference generation** combines corridor centerline, gap direction, outside-bias heuristics, and terminal goal blending.
+- **Rate-limited steering** reduces oscillation and improves vehicle stability.
+
+### Representative Parameters
+
+| Parameter | Value | Role |
+|---|---|---|
+| Control rate | 30 Hz | Closed-loop command frequency |
+| Horizon `N` | 11 | Predictive horizon length |
+| Time step `dt` | 0.06 s | Discretization interval |
+| Wheelbase | 0.50 m | Vehicle geometry |
+| Max steering | 0.36 rad | Steering bound |
+| Max steering step | 0.024 rad | Steering rate limit |
+| Speed upper bound | 4.0 m/s | Velocity constraint |
+| Solver | OSQP | Quadratic program solver |
+
+---
+
+## LiDAR Corridor Extraction and Gap-Guided Reference
+
+The local-reference pipeline is implemented across `mpc_controller/mpc_controller/gap_utils.py` and the corridor logic inside `mpc_node.py`.
+
+### Pipeline Summary
+
+1. **Gap-follow target selection** identifies a safe forward direction from LiDAR data.
+2. **Goal filtering** smooths the selected target across frames to reduce abrupt turns.
+3. **Corridor extraction** clusters forward LiDAR points into left and right boundaries and reconstructs a dense local corridor.
+4. **Reference shaping** blends corridor centerline information with gap guidance and terminal goal biasing.
+
+### Why This Matters
+
+The controller uses the local corridor in two ways:
+
+- to define a nominal short-horizon reference trajectory
+- to impose soft lateral safety bounds inside the optimization problem
+
+![mpc without planner](pic/mpc%20without%20planner.gif)
+
+---
+
+## Safety Node
+
+The safety system is implemented in `safety/` and acts as the final gatekeeper before commands reach the vehicle.
+
+### Main Responsibilities
+
+- compute **time-to-collision (TTC)** and minimum obstacle distance from LiDAR
+- arbitrate between prioritized control messages
+- reduce or override speed in partial-brake and full-brake conditions
+- publish an emergency-safe command on shutdown
+
+### Interfaces
+
+- Input topics: `/drive_control`, `/scan`, and odometry (`/odom` or `/ego_racecar/odom`)
+- Output topic: `/drive`
+- Main interface message: `dev_b7_interfaces/msg/DriveControlMessage`
+
+---
+
+## Global Planner (`sim_working_version`)
+
+The full global planning stack is maintained on the `sim_working_version` branch and has been demonstrated successfully in simulation.
+
+### Planner Flow
+
+1. **Map processing** converts an occupancy-grid map into a drivable mask and extracts a closed centerline.
+2. **Race-line optimization** solves for lateral offsets that reduce curvature and smoothness cost while respecting free-space bounds.
+3. **Speed profiling** computes a curvature-limited speed profile with feasibility passes.
+
+![Global planner demo](pic/global%20planner.gif)
+
+### Hardware Status
+
+The planner launches on hardware, but robust on-car performance is limited by localization quality:
+
+- IMU noise and odometry drift degrade state estimation
+- the global layer is more sensitive to pose quality than the local reactive controller
+- state estimation remains the primary bottleneck for dependable hardware-level global planning
+
+![On-car map building](pic/on%20car%20map%20builder.gif)
+
+---
+
+## Experimental YOLO Perception
+
+All YOLO-related code lives in `yolo/`. This part of the repository is a standalone experiment and was not integrated into the ROS 2 runtime stack.
+
+### Included Scripts
+
+- `yolo.py`: YOLOv8-seg inference plus depth-overlay visualization
+- `yolo laser match.py`: semantic projection from camera space into LiDAR columns
+- `extract pics.py`: random image extraction from ROS bags for data collection
+- `best.pt`: trained YOLOv8-seg weights
+
+![YOLO detection](pic/yolo%20detaction.gif)
+![YOLO-LiDAR matching](pic/yolo%20laser%20match.gif)
+
+### Training Workflow
+
+1. Label an initial seed set of images.
+2. Train an initial YOLOv8-seg model.
+3. Reuse the model for pre-labeling more data.
+4. Correct generated labels manually.
+5. Iterate to grow the dataset efficiently.
+
+Training artifacts are available on [Google Drive](https://drive.google.com/drive/folders/1-zE6DV8pEdiYcfC7sHqsTIyIuEYDFliM?usp=sharing).
+
+### Why It Was Not Deployed
+
+The F1TENTH vehicle does not have CUDA-capable hardware, and CPU-only YOLO inference was too slow for real-time closed-loop use.
+
+### Running YOLO Scripts
+
+```bash
+cd yolo
+pip install ultralytics==8.4.34 rosbags
+python yolo.py
+python "yolo laser match.py"
+python "extract pics.py"
+```
+
+---
 
 ## Dependencies
 
-### ROS 2 Workspace Dependencies
-
-This repository assumes a working ROS 2 environment with the standard packages used by the F1TENTH stack. The list below reflects the packages actually referenced by the current code and build files, even though some package manifests are still stale:
+### ROS 2 Packages
 
 - `rclpy`
 - `rclcpp`
@@ -106,273 +321,45 @@ This repository assumes a working ROS 2 environment with the standard packages u
 
 ### Python Dependencies
 
-The active MPC node imports:
-
 - `numpy`
 - `scipy`
 - `osqp`
 - `opencv-python`
 
-Install them manually if they are not already available in your environment:
-
-```bash
-pip install -r requirements.txt
-```
-
 ### Optional Offline Dependencies
-
-The optional `yolo/` utilities additionally use:
 
 - `ultralytics==8.4.34`
 - `rosbags`
 
-These are not required for the main runtime pipeline.
+### C++ Build Tooling
 
-### Build Dependencies for Safety
+- standard ROS 2 C++ toolchain via `ament_cmake`
 
-The `safety` package is a C++ package built with `ament_cmake`. It supports a CUDA path when a CUDA compiler is available, but it can also build without CUDA.
-
-## Build And Run
-
-### Build
-
-From the workspace root:
-
-```bash
-colcon build --packages-select dev_b7_interfaces safety mpc_controller milestones
-source install/setup.bash
-```
-
-Important note: `milestones/package.xml` still contains a legacy dependency on `wall_follow`, and some package metadata files are not yet fully synchronized with the active project stack. If your workspace does not provide that legacy package, you may need to clean up the manifest before the `milestones` package builds cleanly.
-
-If you prefer to build the full workspace:
-
-```bash
-colcon build
-source install/setup.bash
-```
-
-### Launch The Project Stack
-
-The current launch entry point is:
-
-```bash
-ros2 launch milestones milestone3_py.py
-```
-
-Important note: although the launch file name is `milestone3_py.py`, it is the current launch file used by the project repository for the default local MPC runtime path.
-
-### Simulator Versus Real Car
-
-The current launch file hardcodes:
-
-```python
-sim = False
-```
-
-inside `milestones/launch/milestone3_py.py`. If you want to switch between simulator and real-car odometry topics, you currently need to edit that file directly or extend it with launch arguments.
-
-### Expected Runtime Topics
-
-- MPC input: `/scan`, `/odom` by default
-- MPC output: `/drive_control`
-- Safety input: `/drive_control`, `/scan`, `/odom` or `/ego_racecar/odom`
-- Safety internal feedback topic: `/drive`
-- Final vehicle command: `/drive`
-
-## Core Nodes And Topics
-
-### `mpc_controller`
-
-File: `mpc_controller/mpc_controller/mpc_node.py`
-
-Inputs:
-
-- `/scan`
-- `/odom`
-
-Outputs:
-
-- `/drive_control` as `dev_b7_interfaces/msg/DriveControlMessage`
-
-Role in system:
-
-- preprocess LiDAR data
-- compute a gap-guided local target
-- estimate left and right corridor bounds from forward LiDAR points
-- build a short-horizon local MPC problem
-- solve for speed and steering
-- publish the nominal command with priority `1004`
-
-### `safety`
-
-Main implementation: `safety/safety_node/src/Core/DriveControlNode.cpp`
-
-Inputs:
-
-- `/drive_control`
-- `/scan`
-- `/odom` or `/ego_racecar/odom`
-- `/drive` is also subscribed to internally by the LiDAR safety provider
-
-Outputs:
-
-- `/drive`
-
-Role in system:
-
-- maintain the latest active command for each priority
-- forward the highest-priority command
-- evaluate minimum distance and TTC using LiDAR-based safety providers
-- override or reduce speed in critical and emergency states
-
-### `dev_b7_interfaces`
-
-Main interface file: `dev_b7_interfaces/msg/DriveControlMessage.msg`
-
-Key fields:
-
-- `priority`
-- `active`
-- `drive`
-
-Role in system:
-
-- allow multiple controllers or overrides to publish commands onto the same logical control channel
-- let `safety` select the highest-priority active command
-
-## Algorithm Overview
-
-### Perception And Reference Generation
-
-The project uses local LiDAR geometry rather than a global map. The controller first processes the forward scan to identify a navigable direction using a gap-following style heuristic. It then estimates left and right corridor boundaries from clustered forward LiDAR points and interpolates a dense local corridor over the MPC horizon.
-
-That corridor is used in two ways:
-
-- to define a nominal center / guided reference
-- to impose safety-oriented lateral bounds inside the optimization problem
-
-### MPC Controller
-
-The controller models the vehicle with a short-horizon kinematic formulation and solves a local optimization problem at runtime. The optimization trades off:
-
-- state tracking error
-- terminal tracking error
-- acceleration effort
-- steering effort
-- input rate smoothness
-- slack penalty for soft constraint violation
-
-The solved control output is a speed and steering command that respects configured bounds such as:
-
-- horizon length
-- control timestep
-- wheelbase
-- steering limit
-- acceleration limit
-- corridor safety margin
-
-### Speed Shaping And Safety Override
-
-Nominal speed is shaped based on local geometry such as target angle, curvature, corridor width, and forward clearance. The `safety` node then acts as the final authority on the output command.
-
-If the local scene is safe, `safety` forwards the highest-priority controller command. If the time-to-collision or minimum distance becomes unsafe, it applies stage-based intervention ranging from conservative speed reduction to full emergency braking.
-
-## Key Parameters
-
-The most important parameters currently exposed inside `mpc_controller/mpc_controller/mpc_node.py` include:
-
-### MPC Timing And Vehicle Model
-
-- `dt`
-- `horizon`
-- `wheelbase`
-- `control_rate_hz`
-
-### State And Input Limits
-
-- `max_speed`
-- `min_speed`
-- `max_accel`
-- `min_accel`
-- `max_steer`
-- `max_ddelta`
-
-### Corridor / Reference Generation
-
-- `path_x_max`
-- `path_y_limit`
-- `corridor_bin_half_width`
-- `corridor_margin`
-- `corridor_min_half_width`
-- `corridor_dense_points`
-- `corridor_front_fov_deg`
-
-### Gap Guidance
-
-- `ftg_max_range`
-- `ftg_min_safe_distance`
-- `ftg_car_width`
-- `goal_min_distance`
-- `goal_max_distance`
-- `lookahead_base`
-- `lookahead_front_gain`
-
-### Cost Weights
-
-- `q_x`, `q_y`, `q_psi`, `q_v`
-- `qf_x`, `qf_y`, `qf_psi`, `qf_v`
-- `r_a`, `r_delta`
-- `rd_a`, `rd_delta`
-- `slack_weight`
-
-### Safety Parameters
-
-The launch file currently passes the following important parameters to `safety`:
-
-- `ttc_full`
-- `distance_full`
-- `ttc_partial`
-- `partial_brake_decel`
-- `aeb_auto_release`
+---
 
 ## Testing And Validation
 
-This README focuses on code-specific documentation, so this section emphasizes repository-level validation and debugging workflow rather than full experimental discussion. The recommended workflow is:
+The most useful repository-level validation flow is:
 
-1. Build the workspace and confirm all packages compile.
-2. Run the project stack in simulation or on recorded data.
-3. Visualize `/scan`, `/drive_control`, and `/drive` to confirm nominal control and safety intervention behavior.
-4. Check that the car remains within corridor constraints and slows or stops appropriately when forward clearance collapses.
+1. Build the workspace and confirm the relevant packages compile.
+2. Launch the stack in simulation, on car, or against a recorded ROS bag.
+3. Inspect `/scan`, `/drive_control`, and `/drive`.
+4. Confirm that safety intervention occurs when forward clearance or TTC becomes unsafe.
 
 ### Bag Replay
 
-If you have a recorded ROS bag containing at least `/scan` and the expected odometry topic, you can use replay for controller and safety validation:
-
 ```bash
-ros2 launch milestones milestone3_py.py
+ros2 launch milestones mpc_start_up.py
 ros2 bag play <bag_path>
 ```
 
-If replayed topics do not match the active configuration, first check:
+If replayed topics do not behave as expected, first verify:
 
 - whether the bag publishes `/odom` or `/ego_racecar/odom`
-- whether `sim` inside `milestones/launch/milestone3_py.py` matches the intended topic set
-- whether the bag includes `/scan`
-
-### Runtime Checks
-
-The most useful runtime topics to inspect are:
-
-- `/scan` for incoming LiDAR
-- `/drive_control` for nominal controller output
-- `/drive` for the final command after safety arbitration
-
-To confirm that nominal control is reaching the safety layer, compare `/drive_control` and `/drive` during normal operation. To confirm AEB or safety override behavior, look for cases where `/drive_control` requests motion but `/drive` is reduced or forced toward zero speed by the safety node.
+- whether `sim` inside `milestones/launch/mpc_start_up.py` matches the intended mode
+- whether the bag contains `/scan`
 
 ### Suggested Validation Cases
-
-Suggested validation cases for this repository include:
 
 - straight corridor tracking
 - corner entry and exit stability
@@ -380,21 +367,19 @@ Suggested validation cases for this repository include:
 - obstacle approach with AEB intervention
 - simulator versus on-car topic configuration
 
-Placeholder: insert testing screenshots, plots, or bag replay examples here.
+---
 
-## Known Limitations
+## Project Status
 
-- The current launch file uses a legacy name, `milestone3_py.py`, and does not yet expose launch arguments for `sim`.
-- Some package metadata files are still out of sync with the active stack. For example, `milestones/package.xml` still declares `wall_follow`, while the current launch path uses `mpc_controller`, and several package descriptions remain placeholders.
-- The runtime pipeline is local and reactive; it does not currently include a separate global mapping or global planning module.
-- The `yolo/` code is experimental and offline-oriented rather than integrated into the active launch path.
+| Subsystem | Status | Summary |
+|---|---|---|
+| Local reactive MPC on car | **Achieved** | Stable closed-loop local control on the physical vehicle using LiDAR-driven geometry. |
+| Global planning in simulation | **Achieved** | Track-level planning demonstrated on `sim_working_version`. |
+| Global planning on car | **Partial** | Launches on hardware, but localization limits trajectory quality. |
+| Experimental YOLO perception | **Experimental** | Standalone semantic perception exploration, not part of runtime stack. |
 
-## Submission Notes
+### Key Limitations
 
-This README is intended to document the codebase and how to run it. It is not meant to duplicate the full report. Background, literature review, long-form design discussion, and detailed experimental analysis should remain in the written report, while this file should stay focused on:
-
-- repository structure
-- dependencies
-- build and launch workflow
-- nodes, topics, and interfaces
-- implementation-specific algorithm behavior
+- **Hardware localization** remains the biggest blocker for robust on-car global planning.
+- **No CUDA on vehicle** prevents real-time YOLO deployment.
+- **Some metadata files** may still lag behind the active runtime stack and need cleanup for polished packaging.
