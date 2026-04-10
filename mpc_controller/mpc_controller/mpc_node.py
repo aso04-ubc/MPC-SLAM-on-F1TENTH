@@ -324,6 +324,10 @@ class MPCNode(Node):
 
     # ROS callbacks
     def odom_callback(self, msg: Odometry) -> None:
+        """
+        Update vehicle state from odometry message.
+        
+        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         yaw = self.quaternion_to_yaw(
@@ -340,11 +344,21 @@ class MPCNode(Node):
         self.state = VehicleState(x=x, y=y, yaw=yaw, speed=speed)
 
     def scan_callback(self, msg: LaserScan) -> None:
+        """
+        Cache latest LiDAR scan.
+        
+        """
         self.last_scan = msg
 
     # Main loop
     def control_callback(self) -> None:
-        # Main control loop: processes sensor data and publishes control commands
+        """
+        Main control loop: processes sensor data and publishes control commands.
+        
+        Extracts gap from LiDAR, builds MPC problem, solves optimization,
+        applies safety constraints, and publishes drive command.
+        
+        """
         if self.state is None or self.last_scan is None:
             return
 
@@ -427,8 +441,14 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> np.ndarray:
-        # Filter and smooth gap center with front clearance awareness
-        # Cap distance based on available clearance - closer obstacles mean shorter lookahead
+        """
+        Filter and smooth gap center with front clearance awareness.
+        
+        Applies hysteresis and exponential smoothing to gap location while
+        capping lookahead distance based on front clearance.
+        
+        """
+        
         d_cap = self.effective_goal_base + self.effective_goal_front_gain * max(0.0, front_min)
         d_cap = float(np.clip(d_cap, self.goal_min_distance, self.goal_max_distance))
         d = float(np.clip(min(target_distance, d_cap), self.goal_min_distance, self.goal_max_distance))
@@ -483,8 +503,14 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> Optional[dict]:
-        # Construct MPC problem: corridor extraction, reference trajectory, cost weights
-        # First compute safe gap angle to limit excessive steering
+        """
+        Construct MPC problem: corridor extraction, reference trajectory, cost weights.
+        
+        Extracts drivable corridor from LiDAR clusters, builds reference trajectory
+        with gap-aware steering, and packages all costs into optimization problem.
+        
+        """
+
         safe_gap_angle = self.compute_safe_gap_angle(target_angle, front_min)
         self.last_safe_gap_angle = safe_gap_angle
 
@@ -596,7 +622,13 @@ class MPCNode(Node):
         front_min: float,
         min_width: float,
     ) -> np.ndarray:
-        # Build lateral reference with gap bias and late-apex shaping
+        """
+        Build lateral reference with gap bias and late-apex shaping.
+        
+        Creates trajectory that blends late-apex outside bias with progressive
+        gap attraction, ensuring smooth turn-in and terminal goal convergence.
+        
+        """
         width = upper - lower
         half_width = 0.5 * width
         progress = np.linspace(0.0, 1.0, len(x_ref))
@@ -670,6 +702,10 @@ class MPCNode(Node):
         return y_ref
 
     def compute_safe_gap_angle(self, target_angle: float, front_min: float) -> float:
+        """
+        Limit gap angle based on front clearance to prevent excessive steering.
+        
+        """
         front_scale = float(np.clip((front_min - self.hard_stop_distance) / 1.1, 0.0, 1.0))
         angle_cap = self.gap_heading_front_cap_min + (
             self.gap_heading_front_cap_max - self.gap_heading_front_cap_min
@@ -683,6 +719,10 @@ class MPCNode(Node):
         dist_thresh: float,
         min_points: int,
     ):
+        """
+        Split 2D points into clusters by distance threshold.
+        
+        """
         if len(x_pts) == 0:
             return []
 
@@ -709,6 +749,10 @@ class MPCNode(Node):
         x_dense: np.ndarray,
         default: float,
     ) -> np.ndarray:
+        """
+        Extract dense lateral bound from cluster points via binning and interpolation.
+        
+        """
         y_dense = np.full(len(x_dense), np.nan, dtype=float)
 
         if cluster_pts is None or len(cluster_pts) == 0:
@@ -734,7 +778,13 @@ class MPCNode(Node):
         return y_dense
 
     def estimate_corridor(self, x_ref: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray, dict]]:
-        # Extract left/right bounds from clustered LiDAR data along horizon
+        """
+        Extract left/right bounds from clustered LiDAR data along horizon.
+        
+        Clusters LiDAR points and extracts best left/right obstacle candidates,
+        then interpolates dense bounds along the prediction horizon.
+        
+        """
         if self.gap_algo.last_angles is None or self.gap_algo.last_extended is None:
             return None
 
@@ -857,6 +907,10 @@ class MPCNode(Node):
         return y_left_ref, y_right_ref, dense
 
     def fill_dense_bound(self, arr: np.ndarray, default: float) -> np.ndarray:
+        """
+        Interpolate NaN values and clip to default bound.
+        
+        """
         out = arr.copy()
         idx = np.arange(len(out))
         valid = np.isfinite(out)
@@ -873,6 +927,10 @@ class MPCNode(Node):
         return out
 
     def compute_heading_from_xy(self, x_ref: np.ndarray, y_ref: np.ndarray) -> np.ndarray:
+        """
+        Compute heading angles from xy trajectory using lookahead.
+
+        """
         # Compute heading angles from xy trajectory using lookahead
         psi = np.zeros(len(x_ref), dtype=float)
 
@@ -891,6 +949,10 @@ class MPCNode(Node):
         return psi
 
     def compute_delta_ref(self, x_ref: np.ndarray, y_ref: np.ndarray, psi_ref: np.ndarray) -> np.ndarray:
+        """
+        Compute steering reference from trajectory heading changes.
+        
+        """
         delta_ref = np.zeros(self.N, dtype=float)
         for k in range(self.N):
             dx = x_ref[min(k + 1, self.N)] - x_ref[k]
@@ -910,7 +972,10 @@ class MPCNode(Node):
         min_width: float,
         delta_ref: np.ndarray,
     ) -> float:
-        # Calculate speed setpoint based on gap angle, curvature, and clearance
+        """
+        Calculate speed setpoint based on gap angle, curvature, and clearance.
+        
+        """
         curvature_metric = float(np.max(np.abs(delta_ref))) if len(delta_ref) > 0 else 0.0
 
         v = self.straight_speed
@@ -927,7 +992,13 @@ class MPCNode(Node):
 
     # Full MPC
     def solve_full_mpc(self, problem: dict) -> Tuple[float, float, np.ndarray, float]:
-        # Solve QP with linearized bicycle dynamics, corridor bounds, and rate constraints
+        """
+        Solve QP with linearized bicycle dynamics, corridor bounds, and rate constraints.
+        
+        Constructs and solves convex quadratic program using OSQP, extracting
+        optimal trajectory and first control inputs. Includes warm-start capability.
+        
+        """
         t0 = time.perf_counter()
 
         lower = problem['lower']
@@ -1247,7 +1318,13 @@ class MPCNode(Node):
         xbar: np.ndarray,
         ubar: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # Linearize around reference trajectory for discrete-time MPC
+        """
+        Linearize around reference trajectory for discrete-time MPC.
+        
+        Computes A, B matrices and g vector for linearized dynamics:
+        z[k+1] = A*z[k] + B*u[k] + g
+        
+        """
         x, y, psi, v = [float(val) for val in xbar]
         a, delta = [float(val) for val in ubar]
 
@@ -1281,6 +1358,10 @@ class MPCNode(Node):
 
     # Utilities
     def make_bounds_feasible(self, lower: np.ndarray, upper: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Enforce minimum corridor width by expanding bounds if needed.
+        
+        """
         lower = lower.copy()
         upper = upper.copy()
         for k in range(len(lower)):
@@ -1291,6 +1372,10 @@ class MPCNode(Node):
         return lower, upper
 
     def smooth_1d(self, arr: np.ndarray, passes: int = 1) -> np.ndarray:
+        """
+        Apply Gaussian-like smoothing filter (3-point stencil).
+        
+        """
         out = arr.copy()
         for _ in range(max(0, passes)):
             if len(out) < 3:
@@ -1304,7 +1389,13 @@ class MPCNode(Node):
     # Visualizer
 
     def draw_debug_canvas(self, v_cmd: float, delta_cmd: float) -> None:
-        # Render OpenCV debug window with corridor, trajectory, inputs, and state info
+        """
+        Render OpenCV debug window with corridor, trajectory, inputs, and state info.
+        
+        Displays LiDAR points, detected corridor, reference trajectory, predicted path,
+        and horizon of acceleration/steering inputs.
+        
+        """
         W, H = self.debug_canvas_width, self.debug_canvas_height
         top_h = int(0.62 * H)
         bot_h = H - top_h
@@ -1568,6 +1659,10 @@ class MPCNode(Node):
 
     # Output
     def publish_drive(self, speed: float, steering_angle: float) -> None:
+        """
+        Publish drive command message.
+        
+        """
         temp = AckermannDriveStamped()
         temp.header.stamp = self.get_clock().now().to_msg()
         temp.header.frame_id = 'base_link'
@@ -1583,10 +1678,18 @@ class MPCNode(Node):
 
     @staticmethod
     def quaternion_to_yaw(x: float, y: float, z: float, w: float) -> float:
+        """
+        Convert quaternion to yaw angle.
+        
+        """
         return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
     @staticmethod
     def wrap_angle(a: float) -> float:
+        """
+        Wrap angle to [-pi, pi].
+        
+        """
         return math.atan2(math.sin(a), math.cos(a))
 
 
