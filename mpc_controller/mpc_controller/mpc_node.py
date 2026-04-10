@@ -322,10 +322,7 @@ class MPCNode(Node):
 
         self.get_logger().info('Safer gap-aware full MPC node started.')
 
-    # ──────────────────────────────────────────────────────────────────
     # ROS callbacks
-    # ──────────────────────────────────────────────────────────────────
-
     def odom_callback(self, msg: Odometry) -> None:
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
@@ -345,17 +342,16 @@ class MPCNode(Node):
     def scan_callback(self, msg: LaserScan) -> None:
         self.last_scan = msg
 
-    # ──────────────────────────────────────────────────────────────────
     # Main loop
-    # ──────────────────────────────────────────────────────────────────
-
     def control_callback(self) -> None:
+        # Main control loop: processes sensor data and publishes control commands
         if self.state is None or self.last_scan is None:
             return
 
         self.frame_count += 1
 
         ranges = np.array(self.last_scan.ranges, dtype=float)
+        # Extract gap (target) from LiDAR scan
         target_angle, _, target_distance = self.gap_algo.process_lidar_and_find_gap(
             ranges,
             float(self.last_scan.angle_min),
@@ -364,16 +360,20 @@ class MPCNode(Node):
         target_angle = self.scan_y_sign * float(target_angle)
         target_distance = float(target_distance)
 
+        # Get front clearance for safety constraints
         front_min = float(getattr(self.gap_algo, 'last_front_min', target_distance))
         self.last_front_min = front_min
 
+        # Apply hysteresis filtering to gap center
         goal_local = self.make_filtered_goal(target_angle, target_distance, front_min)
         self.last_goal_local = goal_local.copy()
         self.last_gap_angle = float(target_angle)
         self.last_gap_distance = float(target_distance)
 
+        # Build MPC optimization problem
         problem = self.build_local_mpc_problem(goal_local, target_angle, target_distance, front_min)
         if problem is None:
+            # Fallback to zero speed if problem construction fails
             v_cmd = 0.0
             delta_cmd = self.steering_output_sign * self.prev_delta_cmd_internal
             self.publish_drive(v_cmd, delta_cmd)
@@ -381,9 +381,11 @@ class MPCNode(Node):
                 self.draw_debug_canvas(v_cmd, delta_cmd)
             return
 
+        # Solve QP and extract first control inputs
         v_cmd, delta_cmd, pred_states, solve_ms = self.solve_full_mpc(problem)
         self.last_pred = pred_states
 
+        # Apply emergency hard stops based on front clearance
         if front_min < self.hard_stop_distance:
             v_cmd = 0.0
         elif front_min < 0.42:
@@ -418,28 +420,30 @@ class MPCNode(Node):
         if self.show_opencv_debug:
             self.draw_debug_canvas(v_cmd, delta_cmd)
 
-    # ──────────────────────────────────────────────────────────────────
     # Goal filtering
-    # ──────────────────────────────────────────────────────────────────
-
     def make_filtered_goal(
         self,
         target_angle: float,
         target_distance: float,
         front_min: float,
     ) -> np.ndarray:
+        # Filter and smooth gap center with front clearance awareness
+        # Cap distance based on available clearance - closer obstacles mean shorter lookahead
         d_cap = self.effective_goal_base + self.effective_goal_front_gain * max(0.0, front_min)
         d_cap = float(np.clip(d_cap, self.goal_min_distance, self.goal_max_distance))
         d = float(np.clip(min(target_distance, d_cap), self.goal_min_distance, self.goal_max_distance))
 
+        # Convert polar to Cartesian in local frame
         raw_x = max(0.35, d * math.cos(target_angle))
         raw_y = d * math.sin(target_angle)
 
+        # During startup, drive straight to build up speed
         if self.frame_count <= self.startup_straight_frames:
             self.filtered_goal_x = max(0.8, raw_x)
             self.filtered_goal_y = 0.0
             return np.array([self.filtered_goal_x, self.filtered_goal_y], dtype=float)
 
+        # Apply exponential smoothing with rate limiting to prevent jerky goal movements
         desired_x = (
             self.goal_filter_alpha_x * self.filtered_goal_x
             + (1.0 - self.goal_filter_alpha_x) * raw_x
@@ -451,6 +455,7 @@ class MPCNode(Node):
         ))
         self.filtered_goal_x = max(0.35, self.filtered_goal_x + dx)
 
+        # Only update lateral goal if error exceeds deadband (reduces noise)
         lateral_error = raw_y - self.filtered_goal_y
         if abs(lateral_error) >= self.goal_lateral_deadband:
             desired_y = (
@@ -464,6 +469,7 @@ class MPCNode(Node):
             ))
             self.filtered_goal_y += dy
 
+        # Snap small lateral offsets to zero for cleaner straight driving
         if abs(self.filtered_goal_y) < 0.03:
             self.filtered_goal_y = 0.0
 
@@ -477,41 +483,51 @@ class MPCNode(Node):
         target_distance: float,
         front_min: float,
     ) -> Optional[dict]:
+        # Construct MPC problem: corridor extraction, reference trajectory, cost weights
+        # First compute safe gap angle to limit excessive steering
         safe_gap_angle = self.compute_safe_gap_angle(target_angle, front_min)
         self.last_safe_gap_angle = safe_gap_angle
 
+        # Compute lookahead distance dynamically based on speed and clearance
         lookahead_x = self.lookahead_base
         lookahead_x += self.lookahead_front_gain * max(0.0, front_min)
         lookahead_x += self.lookahead_speed_gain * max(0.0, self.state.speed)
-        lookahead_x -= 0.28 * min(1.0, abs(target_angle) / 0.55)
+        lookahead_x -= 0.28 * min(1.0, abs(target_angle) / 0.55)  # Reduce horizon in tight turns
         lookahead_x = min(lookahead_x, goal_local[0] + 0.15, self.path_x_max)
         lookahead_x = float(np.clip(lookahead_x, 0.65, self.path_x_max))
 
+        # Create evenly-spaced prediction horizon
         x_ref = np.linspace(0.0, lookahead_x, self.N + 1)
 
+        # Extract drivable corridor from LiDAR clusters
         corridor = self.estimate_corridor(x_ref)
         if corridor is None:
             return None
 
         y_left_ref, y_right_ref, dense = corridor
 
+        # Compute corridor width for safety scaling
         raw_width = y_left_ref - y_right_ref
         min_width_raw = float(np.min(raw_width))
         self.last_min_width = min_width_raw
 
+        # Adapt safety margins based on speed and steering aggressiveness
         safe_margin = self.corridor_margin
         safe_margin += self.margin_speed_gain * max(0.0, self.state.speed)
         safe_margin += self.margin_steer_gain * abs(self.prev_delta_cmd_internal)
         safe_margin = float(np.clip(safe_margin, self.corridor_margin, 0.20))
         self.last_safe_margin = safe_margin
 
+        # Convert detected bounds to MPC constraints with margins
         lower = y_right_ref + safe_margin
         upper = y_left_ref - safe_margin
         lower, upper = self.make_bounds_feasible(lower, upper)
 
+        # Get centerline for reference trajectory guidance
         y_center_raw = 0.5 * (y_left_ref + y_right_ref)
         self.last_centerline = np.column_stack((x_ref, y_center_raw))
 
+        # Build lateral reference with gap influence and late-apex shaping
         y_ref = self.build_guided_y_reference(
             x_ref=x_ref,
             lower=lower,
@@ -524,9 +540,11 @@ class MPCNode(Node):
             min_width=min_width_raw,
         )
 
+        # Derive heading and curvature from path
         psi_ref = self.compute_heading_from_xy(x_ref, y_ref)
         delta_ref = self.compute_delta_ref(x_ref, y_ref, psi_ref)
 
+        # Compute speed setpoint based on geometry and clearance
         v_target = self.compute_target_speed(
             target_angle=target_angle,
             target_distance=target_distance,
@@ -536,9 +554,11 @@ class MPCNode(Node):
         )
         v_ref = np.full(self.N + 1, v_target, dtype=float)
 
+        # Pack into reference trajectory and input vectors for QP
         z_ref = np.column_stack((x_ref, y_ref, psi_ref, v_ref))
         u_ref = np.column_stack((np.zeros(self.N, dtype=float), delta_ref))
 
+        # Store for visualization/debugging
         self.last_corridor = {
             'x_ref': x_ref.copy(),
             'y_left_ref': y_left_ref.copy(),
@@ -576,44 +596,57 @@ class MPCNode(Node):
         front_min: float,
         min_width: float,
     ) -> np.ndarray:
+        # Build lateral reference with gap bias and late-apex shaping
         width = upper - lower
         half_width = 0.5 * width
         progress = np.linspace(0.0, 1.0, len(x_ref))
 
+        # Scale gap influence based on current clearance and corridor width
         front_scale = float(np.clip((front_min - self.hard_stop_distance) / 1.1, 0.0, 1.0))
         width_scale = float(np.clip((min_width - 0.28) / 0.55, 0.0, 1.0))
 
+        # Gap direction line (reference slope towards safe gap)
         gap_line = np.tan(safe_gap_angle) * x_ref
         self.last_gap_line = np.column_stack((x_ref, gap_line))
 
+        # Outside bias steer away from gap initially for late-apex effect
         outside_dir = -np.sign(target_angle)
         outside_strength = self.outside_bias_gain * abs(target_angle) * (1.15 - 0.75 * front_scale)
         outside_strength = float(np.clip(outside_strength, 0.0, 0.35))
         outside_cap = self.outside_bias_max_frac * half_width
+        # Decay outside bias towards horizon end
         outside_profile = outside_dir * np.minimum(outside_strength, outside_cap) * ((1.0 - progress) ** 2.3)
 
+        # Base reference centerline pushed outward for late apex
         base_ref = y_center + outside_profile
         base_ref = np.clip(base_ref, lower + 0.01, upper - 0.01)
         self.last_base_ref = np.column_stack((x_ref, base_ref))
 
+        # Compute turn-in point.When to start blending towards gap
         turn_in_start = 0.55
         turn_in_start += 0.15 * min(1.0, abs(target_angle) / 0.60)
         turn_in_start += 0.08 * (1.0 - front_scale)
         turn_in_start = float(np.clip(turn_in_start, 0.55, 0.80))
 
+        # Smooth ramp from zero to one at turn-in point
         ramp = np.clip((progress - turn_in_start) / max(1e-6, 1.0 - turn_in_start), 0.0, 1.0)
 
+        # Gap influence grows non-linearly based on clearance and width
         gap_alpha = self.gap_influence_max * front_scale * width_scale * (ramp ** 2.6)
 
+        # Lock heading for first few steps to ensure stability
         lock_k = min(self.early_center_lock_steps, len(gap_alpha))
         gap_alpha[:lock_k] = 0.0
         self.last_gap_alpha = float(gap_alpha[-1])
 
+        # Limit how far we can shift towards gap line
         gap_shift_limit = self.gap_target_max_frac * half_width
         gap_target = np.clip(gap_line, base_ref - gap_shift_limit, base_ref + gap_shift_limit)
 
+        # Blend between late-apex reference and gap target
         y_ref = (1.0 - gap_alpha) * base_ref + gap_alpha * gap_target
 
+        # Terminal goal final waypoint attraction
         terminal_goal_blend = self.terminal_goal_blend_max * front_scale * width_scale
         terminal_cap = min(float(self.gap_target_max_frac * half_width[-1]), 0.14)
         terminal_goal = float(np.clip(
@@ -622,13 +655,17 @@ class MPCNode(Node):
             y_center[-1] + terminal_cap,
         ))
 
+        # Apply terminal goal influence at horizon end
         if len(y_ref) >= 2:
             y_ref[-2] = 0.97 * y_ref[-2] + 0.03 * terminal_goal
         y_ref[-1] = (1.0 - terminal_goal_blend) * y_ref[-1] + terminal_goal_blend * terminal_goal
 
+        # Smooth trajectory
         y_ref = self.smooth_1d(y_ref, passes=1)
+        # Re-lock early steps after smoothing
         y_ref[:lock_k] = base_ref[:lock_k]
 
+        # Ensure all points remain within bounds
         y_ref = np.clip(y_ref, lower + 0.01, upper - 0.01)
         return y_ref
 
@@ -697,15 +734,18 @@ class MPCNode(Node):
         return y_dense
 
     def estimate_corridor(self, x_ref: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray, dict]]:
+        # Extract left/right bounds from clustered LiDAR data along horizon
         if self.gap_algo.last_angles is None or self.gap_algo.last_extended is None:
             return None
 
         angles = np.array(self.gap_algo.last_angles, dtype=float)
         ranges = np.array(self.gap_algo.last_extended, dtype=float)
 
+        # Convert polar scan to Cartesian coordinates
         x_pts = ranges * np.cos(angles)
         y_pts = self.scan_y_sign * ranges * np.sin(angles)
 
+        # Filter valid points: finite, forward-looking, within horizon
         valid = np.isfinite(x_pts) & np.isfinite(y_pts)
         valid &= (x_pts >= 0.0) & (x_pts <= self.path_x_max + 0.05)
 
@@ -718,6 +758,7 @@ class MPCNode(Node):
         if len(x_use) < 12:
             return None
 
+        # Cluster points to identify obstacles/walls
         cluster_dist = max(0.10, 1.15 * self.corridor_bin_half_width)
         cluster_min_points = max(6, self.corridor_min_points_per_bin // 2)
 
@@ -731,6 +772,7 @@ class MPCNode(Node):
         if len(clusters) == 0:
             return None
 
+        # Score each cluster to find best left and right obstacle candidates
         cluster_info = []
         for pts in clusters:
             cx = float(np.mean(pts[:, 0]))
@@ -749,6 +791,7 @@ class MPCNode(Node):
             })
 
         def cluster_score(info: dict) -> float:
+            # Prefer clusters that are large, extend far, and are centered
             return (
                 0.045 * float(info['size'])
                 + 1.20 * float(info['span'])
@@ -756,6 +799,7 @@ class MPCNode(Node):
                 - 0.10 * abs(float(info['cy']))
             )
 
+        # Find best left (y > 0) and right (y < 0) clusters
         left_candidates = [c for c in cluster_info if c['cy'] > 0.05]
         right_candidates = [c for c in cluster_info if c['cy'] < -0.05]
 
@@ -765,8 +809,10 @@ class MPCNode(Node):
         if left_best is None and right_best is None:
             return None
 
+        # Create dense sampling grid for corridor extraction
         x_dense = np.linspace(0.0, self.path_x_max, self.corridor_dense_points)
 
+        # Extract dense bounds from cluster points with interpolation
         y_left_dense = self.dense_bound_from_cluster(
             None if left_best is None else left_best['pts'],
             x_dense,
@@ -778,6 +824,7 @@ class MPCNode(Node):
             default=-self.path_y_limit,
         )
 
+        # Smooth bounds to reduce noise while preserving sharp features
         for _ in range(max(0, self.corridor_smooth_passes)):
             y_left_dense = self.smooth_1d(y_left_dense, passes=1)
             y_right_dense = self.smooth_1d(y_right_dense, passes=1)
@@ -785,12 +832,14 @@ class MPCNode(Node):
         y_left_dense = np.clip(y_left_dense, -self.path_y_limit, self.path_y_limit)
         y_right_dense = np.clip(y_right_dense, -self.path_y_limit, self.path_y_limit)
 
+        # Enforce minimum corridor width to avoid getting stuck
         for k in range(len(x_dense)):
             if y_left_dense[k] - y_right_dense[k] < 2.0 * self.corridor_min_half_width:
                 mid = 0.5 * (y_left_dense[k] + y_right_dense[k])
                 y_left_dense[k] = min(self.path_y_limit, mid + self.corridor_min_half_width)
                 y_right_dense[k] = max(-self.path_y_limit, mid - self.corridor_min_half_width)
 
+        # Interpolate to reference horizon points
         y_left_ref = np.interp(x_ref, x_dense, y_left_dense)
         y_right_ref = np.interp(x_ref, x_dense, y_right_dense)
 
@@ -824,6 +873,7 @@ class MPCNode(Node):
         return out
 
     def compute_heading_from_xy(self, x_ref: np.ndarray, y_ref: np.ndarray) -> np.ndarray:
+        # Compute heading angles from xy trajectory using lookahead
         psi = np.zeros(len(x_ref), dtype=float)
 
         for i in range(len(x_ref) - 1):
@@ -860,6 +910,7 @@ class MPCNode(Node):
         min_width: float,
         delta_ref: np.ndarray,
     ) -> float:
+        # Calculate speed setpoint based on gap angle, curvature, and clearance
         curvature_metric = float(np.max(np.abs(delta_ref))) if len(delta_ref) > 0 else 0.0
 
         v = self.straight_speed
@@ -874,11 +925,9 @@ class MPCNode(Node):
 
         return float(np.clip(v, self.min_speed, self.max_speed))
 
-    # ──────────────────────────────────────────────────────────────────
     # Full MPC
-    # ──────────────────────────────────────────────────────────────────
-
     def solve_full_mpc(self, problem: dict) -> Tuple[float, float, np.ndarray, float]:
+        # Solve QP with linearized bicycle dynamics, corridor bounds, and rate constraints
         t0 = time.perf_counter()
 
         lower = problem['lower']
@@ -912,9 +961,11 @@ class MPCNode(Node):
         P = sp.lil_matrix((nvar, nvar))
         q = np.zeros(nvar, dtype=float)
 
+        # State tracking costs: penalize deviation from reference trajectory
         Q = np.array([self.q_x, self.q_y, self.q_psi, self.q_v], dtype=float)
         Qf = np.array([self.qf_x, self.qf_y, self.qf_psi, self.qf_v], dtype=float)
 
+        # Apply state costs at each horizon step (higher weights at terminal step)
         for k in range(self.N + 1):
             W = Qf if k == self.N else Q
             for i in range(n_state):
@@ -926,6 +977,7 @@ class MPCNode(Node):
             ia = a_index(k)
             idel = d_index(k)
 
+            # Input costs: penalize deviation of accel and steering from reference
             P[ia, ia] += 2.0 * self.r_a
             q[ia] += -2.0 * self.r_a * u_ref[k, 0]
 
@@ -936,13 +988,17 @@ class MPCNode(Node):
             ia = a_index(k)
             idel = d_index(k)
 
+            # Input rate costs, penalize acceleration of accel and steering rate
+            # For k=0, compare to previous step; for k>0, use finite differences
             if k == 0:
+                # Rate w.r.t. previous step
                 P[ia, ia] += 2.0 * self.rd_a
                 q[ia] += -2.0 * self.rd_a * self.prev_a_cmd
 
                 P[idel, idel] += 2.0 * self.rd_delta
                 q[idel] += -2.0 * self.rd_delta * self.prev_delta_cmd_internal
             else:
+                # Rate with respect to previous horizon step
                 ia_prev = a_index(k - 1)
                 idel_prev = d_index(k - 1)
 
@@ -958,6 +1014,7 @@ class MPCNode(Node):
 
         for k in range(self.N + 1):
             islk = s_index(k)
+            # Slack variable costs penalizing constraint violations
             P[islk, islk] += 2.0 * self.slack_weight
 
         rows = []
@@ -966,6 +1023,7 @@ class MPCNode(Node):
         l_eq = []
         u_eq = []
 
+        # Initial state constraint. x0 = current vehicle state
         z0 = np.array([0.0, 0.0, 0.0, float(np.clip(self.state.speed, 0.0, self.max_speed))], dtype=float)
 
         for i in range(n_state):
@@ -977,6 +1035,8 @@ class MPCNode(Node):
 
         row_base = n_state
 
+        # Dynamics constraints: z[k+1] = A[k]*z[k] + B[k]*u[k] + g[k]
+        # Using linearized bicycle model around reference trajectory
         for k in range(self.N):
             zk_bar = z_ref[k]
             uk_bar = u_ref[k]
@@ -987,6 +1047,7 @@ class MPCNode(Node):
                 cols.append(z_index(k + 1, i))
                 data.append(1.0)
 
+                # reforming the lineraized equation as z[k+1] - A*z[k] - B*u[k] = g
                 for j in range(n_state):
                     rows.append(row_base + i)
                     cols.append(z_index(k, j))
@@ -1009,6 +1070,7 @@ class MPCNode(Node):
         l_eq = np.array(l_eq, dtype=float)
         u_eq = np.array(u_eq, dtype=float)
 
+        # Build inequality constraint matrix
         inf = 1e8
         rows = []
         cols = []
@@ -1017,6 +1079,7 @@ class MPCNode(Node):
         u_in = []
         row = 0
 
+        # Acceleration bounds
         for k in range(self.N):
             rows.append(row)
             cols.append(a_index(k))
@@ -1025,6 +1088,7 @@ class MPCNode(Node):
             u_in.append(self.max_accel)
             row += 1
 
+        # Steering angle bounds
         for k in range(self.N):
             rows.append(row)
             cols.append(d_index(k))
@@ -1033,6 +1097,7 @@ class MPCNode(Node):
             u_in.append(self.max_steer)
             row += 1
 
+        # Speed bounds: v in [0, v_max]
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(z_index(k, 3))
@@ -1041,6 +1106,7 @@ class MPCNode(Node):
             u_in.append(self.max_speed)
             row += 1
 
+        # Heading angle bounds: psi in [-1, 1] rad
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(z_index(k, 2))
@@ -1049,6 +1115,7 @@ class MPCNode(Node):
             u_in.append(1.0)
             row += 1
 
+        # Longitudinal position bounds: x in [0, x_max]
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(z_index(k, 0))
@@ -1057,28 +1124,31 @@ class MPCNode(Node):
             u_in.append(self.path_x_max + 0.30)
             row += 1
 
+        # Upper corridor constraint: y <= y_up + slack
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(z_index(k, 1))
             data.append(1.0)
             rows.append(row)
             cols.append(s_index(k))
-            data.append(-1.0)
+            data.append(-1.0)  # subtract slack to allow violation
             l_in.append(-inf)
             u_in.append(upper[k])
             row += 1
 
+        # Lower corridor constraint: y >= y_low - slack
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(z_index(k, 1))
             data.append(1.0)
             rows.append(row)
             cols.append(s_index(k))
-            data.append(1.0)
+            data.append(1.0)  # add slack to allow violation
             l_in.append(lower[k])
             u_in.append(inf)
             row += 1
 
+        # Slack non-negativity: slack >= 0
         for k in range(self.N + 1):
             rows.append(row)
             cols.append(s_index(k))
@@ -1087,8 +1157,10 @@ class MPCNode(Node):
             u_in.append(inf)
             row += 1
 
+        # Steering rate constraint: |d[k] - d[k-1]| <= max_ddelta
         for k in range(self.N):
             if k == 0:
+                # First step: compare to previous command
                 rows.append(row)
                 cols.append(d_index(k))
                 data.append(1.0)
@@ -1096,6 +1168,7 @@ class MPCNode(Node):
                 u_in.append(self.prev_delta_cmd_internal + self.max_ddelta)
                 row += 1
             else:
+                # Later steps steering rate limit
                 rows.append(row)
                 cols.append(d_index(k))
                 data.append(1.0)
@@ -1110,10 +1183,12 @@ class MPCNode(Node):
         l_in = np.array(l_in, dtype=float)
         u_in = np.array(u_in, dtype=float)
 
+        # Stack equality and inequality constraints
         Aqp = sp.vstack([Aeq, Aineq], format='csc')
         l_qp = np.concatenate([l_eq, l_in])
         u_qp = np.concatenate([u_eq, u_in])
 
+        # Setup and solve QP using OSQP solver
         solver = osqp.OSQP()
         solver.setup(
             P=P.tocsc(),
@@ -1122,7 +1197,7 @@ class MPCNode(Node):
             l=l_qp,
             u=u_qp,
             verbose=False,
-            warm_start=True,
+            warm_start=True,  # Use previous solution as initial guess
             polish=False,
             eps_abs=1e-3,
             eps_rel=1e-3,
@@ -1131,7 +1206,9 @@ class MPCNode(Node):
         res = solver.solve()
         solve_ms = (time.perf_counter() - t0) * 1000.0
 
+        # Check solver status
         if res.x is None or res.info.status_val not in (1, 2):
+            # Solver failed or problem infeasible: fall back to previous command
             v_cmd = 0.0
             delta_internal = float(np.clip(self.prev_delta_cmd_internal, -self.max_steer, self.max_steer))
             delta_cmd = self.steering_output_sign * delta_internal
@@ -1139,33 +1216,38 @@ class MPCNode(Node):
             self.last_u_pred = np.zeros((self.N, 2), dtype=float)
             return v_cmd, delta_cmd, pred, solve_ms
 
+        # Extract solution components
         sol = res.x
+        # State trajectory
         z_seq = sol[:nZ].reshape(self.N + 1, n_state)
+        # Acceleration sequence
         a_seq = sol[nZ:nZ + n_acc]
+        # Steering angle sequence
         d_seq = sol[nZ + n_acc:nZ + n_acc + n_del]
 
         self.last_u_pred = np.column_stack((a_seq.copy(), d_seq.copy()))
 
+        # Apply input constraints and extract first command
         a_cmd = float(np.clip(a_seq[0], self.min_accel, self.max_accel))
         delta_internal = float(np.clip(d_seq[0], -self.max_steer, self.max_steer))
 
+        # Use next state speed prediction for smoother acceleration
         v_cmd = float(np.clip(z_seq[1, 3], self.min_speed, self.max_speed))
         delta_cmd = float(self.steering_output_sign * delta_internal)
 
+        # Update previous commands for next iteration
         self.prev_a_cmd = a_cmd
         self.prev_delta_cmd_internal = delta_internal
 
         return v_cmd, delta_cmd, z_seq, solve_ms
 
-    # ──────────────────────────────────────────────────────────────────
     # Dynamics
-    # ──────────────────────────────────────────────────────────────────
-
     def linearize_bicycle_dynamics(
         self,
         xbar: np.ndarray,
         ubar: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # Linearize around reference trajectory for discrete-time MPC
         x, y, psi, v = [float(val) for val in xbar]
         a, delta = [float(val) for val in ubar]
 
@@ -1197,10 +1279,7 @@ class MPCNode(Node):
         g = f - A @ np.array([x, y, psi, v], dtype=float) - B @ np.array([a, delta], dtype=float)
         return A, B, g
 
-    # ──────────────────────────────────────────────────────────────────
     # Utilities
-    # ──────────────────────────────────────────────────────────────────
-
     def make_bounds_feasible(self, lower: np.ndarray, upper: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         lower = lower.copy()
         upper = upper.copy()
@@ -1225,6 +1304,7 @@ class MPCNode(Node):
     # Visualizer
 
     def draw_debug_canvas(self, v_cmd: float, delta_cmd: float) -> None:
+        # Render OpenCV debug window with corridor, trajectory, inputs, and state info
         W, H = self.debug_canvas_width, self.debug_canvas_height
         top_h = int(0.62 * H)
         bot_h = H - top_h
