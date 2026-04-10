@@ -142,9 +142,7 @@ Project_B7/
 |---|---|
 | `main` | Primary branch with local reactive MPC + safety |
 | `sim_working_version` | Simulation-capable global planning stack |
-| `yolo` | YOLO development branch |
-| `leo/planner` | Planner research branch |
-| `offline-slam` | Offline SLAM and mapping experiments |
+
 
 ---
 
