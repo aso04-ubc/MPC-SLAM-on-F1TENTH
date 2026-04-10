@@ -263,7 +263,7 @@ $$
 where $e_i$ is the lateral offset at sample $i$. Offsets are solved by bounded optimization:
 
 $$
-\min_{\mathbf{e}} \; J(\mathbf{e}) =
+\min_{\mathbf{e}} J(\mathbf{e}) =
 w_{\kappa}\sum_i (\Delta^2 e_i)^2 +
 w_s\sum_i (\Delta e_i)^2 +
 w_c\sum_i e_i^2,
