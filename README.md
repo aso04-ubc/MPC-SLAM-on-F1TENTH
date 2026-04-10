@@ -8,7 +8,7 @@ The primary design goal is to drive from **local perception only**, without requ
 
 In addition to the active local controller, the repository also includes:
 
-- A **global planning** stack that runs successfully in simulation on the `sim_working_version` branch.
+- A **global planning** stack that runs successfully in simulation on the `sim_working_version` branch. And test script under `mapper_test_code` folder.
 - A **C++ safety node** with time-to-collision (TTC) and distance-based automatic emergency braking (AEB).
 - An **experimental YOLO-based semantic perception** pipeline kept as standalone scripts and not integrated into the ROS runtime stack.
 
@@ -153,6 +153,7 @@ Project_B7/
 |-- safety/                    # C++ safety / AEB package
 |-- yolo/                      # Standalone perception experiments
 |-- pic/                       # Demo GIFs and figures
+|-- mapper_test_code/          # The code we used for mapper
 ```
 
 ### Branches
