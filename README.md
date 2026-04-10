@@ -67,13 +67,32 @@ cd ~/sim_ws/src/Project_B7
 git checkout sim_working_version
 
 cd ~/sim_ws
-colcon build --packages-select dev_b7_interfaces safety mpc_controller milestones
+colcon build 
 source install/setup.bash
 
 ros2 launch milestones race_line_stack.launch.py sim:=true odom_topic:=/ego_racecar/odom map_window_size:=1000
 ```
 
 For best performance, replace the default Levine map with `./levine.png` in that branch's launch configuration. The planner is computationally expensive; with a 1000 px map, a practical reference point is roughly **16 CPU cores** and **10 GB of memory**.
+
+### Launch - Global Planner using Ros Bag and on real car(`leo/planner`)
+
+Due to the difference between the real car and the sim, we have a separate branch for ros_bag/real_car. However, we have not yet manage to get it perform well on real car. 
+
+The global planning stack that successfully runs using ros bag lives on the `leo/planner` branch:
+
+```bash
+cd ~/sim_ws/src/Project_B7
+git checkout leo/planner
+
+cd ~/sim_ws
+colcon build 
+source install/setup.bash
+
+ros2 launch milestones race_line_stack.launch.py 
+```
+
+While milestones have started, you may use `ros2 bag play *.db3` to replay the bag, while visualizing the debug pic.
 
 ### Core ROS Topics
 
@@ -142,6 +161,7 @@ Project_B7/
 |---|---|
 | `main` | Primary branch with local reactive MPC + safety |
 | `sim_working_version` | Simulation-capable global planning stack |
+| `leo/planner` | Runable with ros bag and on real car, the performance of the branch is not well|
 
 
 ---
